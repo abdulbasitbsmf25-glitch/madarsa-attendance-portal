@@ -1,0 +1,9 @@
+streamlit
+pandas
+plotly
+gspread
+google-auth
+openpyxl
+reportlab
+arabic-reshaper
+python-bidi
