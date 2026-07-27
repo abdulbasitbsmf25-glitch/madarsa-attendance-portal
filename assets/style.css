@@ -1,0 +1,426 @@
+/* ==========================
+   MADARSA ATTENDANCE PORTAL
+========================== */
+
+/* ==========================================
+   Jameel Noori Nastaleeq Font
+========================================== */
+
+@font-face{
+    font-family:"Jameel";
+    src:url("fonts/JameelNooriNastaleeq.ttf") format("truetype");
+    font-weight:normal;
+    font-style:normal;
+}
+
+@font-face{
+    font-family:"Jameel";
+    src:url("fonts/JameelNooriNastaleeq-Bold.ttf") format("truetype");
+    font-weight:bold;
+    font-style:normal;
+}
+
+/* Urdu */
+
+html,
+body,
+.stApp,
+p,
+label,
+button:not([data-testid="stBaseButton-headerNoPadding"]),
+input,
+textarea,
+select,
+option,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6{
+    font-family:"Jameel", serif !important;
+}
+
+/* Keep Streamlit Material icons working */
+span.material-symbols-rounded,
+span.material-symbols-outlined,
+span[data-testid="stIconMaterial"],
+button span[data-testid="stIconMaterial"]{
+    font-family:"Material Symbols Rounded" !important;
+    font-weight:normal !important;
+    font-style:normal !important;
+    font-size:24px;
+    line-height:1;
+    letter-spacing:normal;
+    text-transform:none;
+    white-space:nowrap;
+    word-wrap:normal;
+    direction:ltr;
+    font-feature-settings:"liga";
+    -webkit-font-feature-settings:"liga";
+    -webkit-font-smoothing:antialiased;
+}
+
+.stApp{
+    background:#eef5f9 !important;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"]{
+    background:linear-gradient(180deg,#0B5D4D,#0F766E) !important;
+}
+
+[data-testid="stSidebar"] *{
+    color:#fff !important;
+}
+
+/* Main container */
+.block-container{
+    padding-top:2rem;
+    padding-bottom:2rem;
+}
+
+/* Headings */
+h1,h2,h3{
+    color:#0B5D4D !important;
+    font-weight:700 !important;
+}
+
+/* Metric Cards */
+div[data-testid="stMetric"]{
+    background:white !important;
+    border-radius:18px !important;
+    padding:20px !important;
+    border:1px solid #dbe5ea;
+    box-shadow:0 8px 24px rgba(0,0,0,.08);
+}
+
+/* Buttons */
+.stButton>button{
+    background:linear-gradient(90deg,#16a34a,#0F766E)!important;
+    color:white!important;
+    border:none!important;
+    border-radius:12px!important;
+    font-weight:bold!important;
+    height:48px!important;
+}
+
+.stButton>button:hover{
+    transform:translateY(-2px);
+    box-shadow:0 10px 25px rgba(0,0,0,.18);
+}
+
+/* Inputs */
+.stTextInput input,
+.stNumberInput input,
+.stDateInput input{
+    border-radius:12px!important;
+    border:1px solid #d6dde4!important;
+}
+
+/* Selectbox */
+[data-baseweb="select"]{
+    border-radius:12px!important;
+}
+
+/* DataFrame */
+[data-testid="stDataFrame"]{
+    background:white;
+    border-radius:18px;
+    overflow:hidden;
+    box-shadow:0 8px 20px rgba(0,0,0,.08);
+}
+
+/* Tabs */
+button[data-baseweb="tab"]{
+    border-radius:12px!important;
+    font-weight:600!important;
+}
+
+/* Expanders */
+details{
+    background:white!important;
+    border-radius:15px!important;
+    padding:10px!important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar{
+    width:10px;
+}
+
+::-webkit-scrollbar-thumb{
+    background:#0F766E;
+    border-radius:20px;
+}
+
+.stat-card{
+    background:linear-gradient(135deg,#ffffff,#f8fbff);
+    border-radius:18px;
+    padding:22px;
+    box-shadow:0 10px 25px rgba(0,0,0,.10);
+    border-left:6px solid #0F766E;
+    text-align:center;
+    min-height:170px;
+}
+
+.stat-icon{
+    font-size:42px;
+    margin-bottom:12px;
+}
+
+.stat-value{
+    font-size:34px;
+    font-weight:700;
+    color:#0F766E;
+}
+
+.stat-title{
+    font-size:18px;
+    color:#64748B;
+    font-weight:600;
+}
+
+/* ===========================
+   Dashboard Header
+=========================== */
+
+.dashboard-header{
+    background:linear-gradient(135deg,#0F766E,#16A34A);
+    border-radius:22px;
+    padding:30px;
+    margin-bottom:25px;
+    color:white;
+    box-shadow:0 10px 30px rgba(0,0,0,.15);
+}
+
+.dashboard-title{
+    font-size:36px;
+    font-weight:700;
+    color:white;
+}
+
+.dashboard-subtitle{
+    margin-top:12px;
+    font-size:24px;
+    color:white;
+}
+
+.dashboard-text{
+    margin-top:8px;
+    font-size:17px;
+    opacity:.9;
+}
+
+
+/* ====================================
+   Professional Sidebar
+==================================== */
+
+section[data-testid="stSidebar"]{
+    background:linear-gradient(180deg,#0B5D4D,#0F766E) !important;
+}
+
+section[data-testid="stSidebar"] *{
+    color:white !important;
+}
+
+section[data-testid="stSidebar"] button{
+    border-radius:12px !important;
+    margin-bottom:6px;
+}
+
+section[data-testid="stSidebar"] button:hover{
+    background:rgba(255,255,255,.15)!important;
+}
+
+
+/* ===========================
+   Premium Statistic Cards
+=========================== */
+
+.stat-card{
+    background:white;
+    border-radius:20px;
+    padding:22px;
+    text-align:center;
+    border:1px solid #e5e7eb;
+    box-shadow:0 10px 25px rgba(0,0,0,.08);
+    transition:.3s;
+    min-height:180px;
+}
+
+.stat-card:hover{
+    transform:translateY(-6px);
+    box-shadow:0 18px 40px rgba(15,118,110,.18);
+}
+
+.stat-icon{
+    font-size:42px;
+    margin-bottom:15px;
+}
+
+.stat-value{
+    font-size:34px;
+    font-weight:700;
+    color:#0F766E;
+    margin-bottom:8px;
+}
+
+.stat-title{
+    font-size:18px;
+    color:#64748B;
+    font-weight:600;
+}
+
+/* Student Page Header */
+
+.page-header{
+    background:white;
+    border-radius:20px;
+    padding:25px;
+    margin-bottom:20px;
+    box-shadow:0 5px 20px rgba(0,0,0,.08);
+}
+
+.page-title{
+    font-size:30px;
+    font-weight:700;
+    color:#0F766E;
+}
+
+.page-subtitle{
+    color:#64748B;
+    margin-top:5px;
+}
+
+.stButton>button{
+    width:100%;
+    border-radius:12px;
+    font-weight:600;
+    height:46px;
+    border:none;
+    transition:.25s;
+}
+
+.stButton>button:hover{
+    transform:translateY(-2px);
+}
+
+div[data-testid="stDataFrame"]{
+    border-radius:18px;
+    overflow:hidden;
+    box-shadow:0 8px 25px rgba(0,0,0,.08);
+}
+
+.stTextInput input,
+.stSelectbox,
+.stDateInput,
+.stNumberInput input{
+
+    border-radius:12px !important;
+}
+
+div[data-testid="stMetric"]{
+    background:white;
+    padding:18px;
+    border-radius:18px;
+    box-shadow:0 6px 20px rgba(0,0,0,.08);
+}
+
+.primary-btn button{
+    background:#0F766E!important;
+    color:white!important;
+}
+
+/* =================================
+   Clean Sidebar Design
+================================= */
+
+.sidebar-school{
+    text-align:center;
+    padding:18px 8px 20px;
+    border-bottom:1px solid rgba(255,255,255,.22);
+}
+
+.sidebar-school-icon{
+    font-size:44px;
+    line-height:1;
+    margin-bottom:10px;
+}
+
+.sidebar-school-name{
+    color:white;
+    font-size:20px;
+    font-weight:700;
+    line-height:1.7;
+}
+
+.simple-sidebar-profile{
+    text-align:center;
+    padding:22px 10px;
+    margin-bottom:16px;
+    border-bottom:1px solid rgba(255,255,255,.22);
+}
+
+.simple-avatar{
+    width:74px;
+    height:74px;
+    margin:0 auto 12px;
+    border-radius:50%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:rgba(255,255,255,.14);
+    border:2px solid rgba(255,255,255,.4);
+    font-size:36px;
+}
+
+.simple-user-name{
+    color:white;
+    font-size:20px;
+    font-weight:700;
+    line-height:1.6;
+}
+
+.simple-user-role{
+    color:rgba(255,255,255,.8);
+    font-size:14px;
+    margin-top:2px;
+}
+
+.simple-online{
+    color:#86efac;
+    font-size:13px;
+    margin-top:7px;
+}
+
+.sidebar-menu-title{
+    color:white;
+    font-size:17px;
+    font-weight:700;
+    margin:10px 0 8px;
+}
+
+.sidebar-divider{
+    height:1px;
+    background:rgba(255,255,255,.22);
+    margin:20px 0;
+}
+
+/* Remove horizontal scrollbar from sidebar */
+
+[data-testid="stSidebar"]{
+    overflow-x:hidden !important;
+}
+
+[data-testid="stSidebar"] > div{
+    overflow-x:hidden !important;
+}
+
+[data-testid="stSidebar"] .stMarkdown,
+[data-testid="stSidebar"] .stRadio,
+[data-testid="stSidebar"] .stButton{
+    max-width:100% !important;
+    box-sizing:border-box !important;
+}
