@@ -1,17 +1,19 @@
-# attendance.py
+# students.py
 """
-حاضری اور روزانہ تعلیمی کام کا مکمل انتظام۔
+طلباء کے انتظام کا صفحہ۔
 
 اہم اصول:
 - طالب علم کی شناخت StudentName + FatherName + AssignedTeacher سے ہوتی ہے۔
-- صبح اور دوپہر کی حاضری الگ الگ محفوظ ہوتی ہے۔
-- استاد صرف اپنے فعال طلباء کا ریکارڈ درج کر سکتا ہے۔
-- استاد صرف آج کے اپنے ریکارڈ میں ترمیم کر سکتا ہے؛ حذف نہیں کر سکتا۔
-- منتظم تمام اساتذہ کی طرف سے اندراج، ترمیم اور حذف کر سکتا ہے۔
-- سبق، سبقی، منزل اور پاؤ کا روزانہ ریکارڈ بھی اسی صفحے سے درج ہوتا ہے۔
+- Student ID / Roll Number استعمال نہیں ہوتا۔
+- صرف منتظم طلباء شامل، تبدیل یا حذف کر سکتا ہے۔
+- فعال اور غیر فعال طلباء دونوں دکھائے جا سکتے ہیں۔
+- Excel اور PDF برآمد کی سہولت موجود ہے۔
 """
 
 from __future__ import annotations
+
+import inspect
+from typing import Any, Callable
 
 import pandas as pd
 import streamlit as st
@@ -19,65 +21,115 @@ import streamlit as st
 import auth
 import config
 import sheets
+
+try:
+    from reports import dataframe_to_pdf_bytes, to_excel_bytes
+except Exception:
+    dataframe_to_pdf_bytes = None
+    to_excel_bytes = None
+
 from utils import (
     error_message,
     info_message,
-    render_stat_card,
     require_login,
     success_message,
-    today_str,
     warning_message,
 )
 
 
-ATTENDANCE_COLUMN_LABELS = {
-    "Date": "تاریخ",
-    "AttendanceSession": "حاضری کا وقت",
+STUDENT_COLUMN_LABELS = {
     "StudentName": "طالب علم کا نام",
     "FatherName": "والد کا نام",
-    "TeacherUsername": "استاد کا یوزرنیم",
-    "TeacherName": "استاد",
+    "AssignedTeacher": "مقرر استاد",
     "Status": "حیثیت",
-    "TimeSubmitted": "اندراج کا وقت",
-}
-
-DAILY_WORK_COLUMN_LABELS = {
-    "Date": "تاریخ",
-    "StudentName": "طالب علم کا نام",
-    "FatherName": "والد کا نام",
-    "TeacherUsername": "استاد کا یوزرنیم",
-    "TeacherName": "استاد",
-    "SabaqSurah": "سبق: سورت",
-    "SabaqAyah": "سبق: آیت",
-    "SabqiSurah": "سبقی: سورت",
-    "SabqiAyah": "سبقی: آیت",
-    "ManzilJuz": "منزل: پارہ",
-    "ManzilAmount": "منزل: مقدار",
-    "ManzilHalf": "منزل: نصف",
-    "PaoJuz": "پاؤ: پارہ",
-    "PaoQuarter": "پاؤ نمبر",
-    "TimeSubmitted": "اندراج کا وقت",
+    "DateAdded": "داخلے کی تاریخ",
+    "Notes": "نوٹس",
 }
 
 
-def _clean(value) -> str:
+def _clean(value: Any) -> str:
     return str(value if value is not None else "").strip()
 
 
-def _normalise(value) -> str:
+def _normalise(value: Any) -> str:
     return _clean(value).casefold()
 
 
-def _student_key(student_name, father_name) -> str:
-    return f"{_normalise(student_name)}|||{_normalise(father_name)}"
+def _student_key(student_name: Any, father_name: Any, teacher: Any) -> str:
+    return (
+        f"{_normalise(student_name)}|||"
+        f"{_normalise(father_name)}|||"
+        f"{_normalise(teacher)}"
+    )
 
 
-def _teacher_key(username: str) -> str:
-    return _normalise(username)
+def _find_callable(*names: str) -> Callable | None:
+    for name in names:
+        func = getattr(sheets, name, None)
+        if callable(func):
+            return func
+    return None
+
+
+def _call_compatible(func: Callable, candidates: list[tuple[tuple, dict]]):
+    """
+    مختلف ممکنہ sheets.py signatures کے ساتھ محفوظ طریقے سے فنکشن چلائیں۔
+    """
+    last_error = None
+
+    for args, kwargs in candidates:
+        try:
+            signature = inspect.signature(func)
+            signature.bind_partial(*args, **kwargs)
+        except (TypeError, ValueError):
+            continue
+
+        try:
+            return func(*args, **kwargs)
+        except TypeError as exc:
+            last_error = exc
+            continue
+
+    if last_error:
+        raise last_error
+
+    raise TypeError("اس فنکشن کے لیے مناسب arguments نہیں ملے۔")
+
+
+def _get_all_students() -> pd.DataFrame:
+    func = _find_callable(
+        "get_all_students",
+        "get_students",
+        "fetch_students",
+        "read_students",
+    )
+
+    if func is None:
+        raise AttributeError(
+            "sheets.py میں get_all_students() یا اس جیسا فنکشن موجود نہیں۔"
+        )
+
+    result = func()
+
+    if result is None:
+        return pd.DataFrame()
+
+    if isinstance(result, pd.DataFrame):
+        return result.copy()
+
+    return pd.DataFrame(result)
 
 
 def _get_teacher_records() -> list[dict]:
-    users_df = sheets.get_all_users()
+    func = _find_callable("get_all_users", "get_users", "fetch_users")
+    if func is None:
+        return []
+
+    users = func()
+    if users is None:
+        return []
+
+    users_df = users if isinstance(users, pd.DataFrame) else pd.DataFrame(users)
     if users_df.empty:
         return []
 
@@ -85,1163 +137,743 @@ def _get_teacher_records() -> list[dict]:
     if not required.issubset(users_df.columns):
         return []
 
+    teacher_role = getattr(config, "ROLE_TEACHER", "teacher")
     teachers = users_df[
-        users_df["Role"].astype(str).str.strip() == config.ROLE_TEACHER
+        users_df["Role"].astype(str).str.strip() == teacher_role
     ].copy()
 
     if "Active" in teachers.columns:
         active = teachers["Active"].astype(str).str.strip().str.lower()
         teachers = teachers[active.isin(["true", "1", "yes", "فعال"])]
 
-    result = []
+    records = []
     for _, row in teachers.iterrows():
         username = _clean(row.get("Username"))
         full_name = _clean(row.get("FullName")) or username
         if username:
-            result.append({"Username": username, "FullName": full_name})
-    return result
+            records.append(
+                {
+                    "Username": username,
+                    "FullName": full_name,
+                }
+            )
+
+    return records
 
 
-def _filter_students_for_teacher(
+def _status_options() -> list[str]:
+    active = getattr(config, "STUDENT_STATUS_ACTIVE", "فعال")
+    inactive = getattr(config, "STUDENT_STATUS_INACTIVE", "غیر فعال")
+    return [active, inactive]
+
+
+def _active_status() -> str:
+    return getattr(config, "STUDENT_STATUS_ACTIVE", "فعال")
+
+
+def _add_student(
+    student_name: str,
+    father_name: str,
+    assigned_teacher: str,
+    status: str,
+    notes: str,
+) -> bool:
+    func = _find_callable(
+        "add_student",
+        "create_student",
+        "insert_student",
+        "save_student",
+    )
+
+    if func is None:
+        raise AttributeError(
+            "sheets.py میں add_student() یا اس جیسا فنکشن موجود نہیں۔"
+        )
+
+    record = {
+        "StudentName": student_name,
+        "FatherName": father_name,
+        "AssignedTeacher": assigned_teacher,
+        "Status": status,
+        "Notes": notes,
+    }
+
+    result = _call_compatible(
+        func,
+        [
+            ((record,), {}),
+            ((), record),
+            (
+                (
+                    student_name,
+                    father_name,
+                    assigned_teacher,
+                    status,
+                    notes,
+                ),
+                {},
+            ),
+            (
+                (
+                    student_name,
+                    father_name,
+                    assigned_teacher,
+                    status,
+                ),
+                {},
+            ),
+            (
+                (
+                    student_name,
+                    father_name,
+                    assigned_teacher,
+                ),
+                {},
+            ),
+        ],
+    )
+
+    return True if result is None else bool(result)
+
+
+def _update_student(
+    old_name: str,
+    old_father: str,
+    old_teacher: str,
+    new_name: str,
+    new_father: str,
+    new_teacher: str,
+    new_status: str,
+    notes: str,
+) -> bool:
+    func = _find_callable(
+        "update_student",
+        "update_student_record",
+        "edit_student",
+    )
+
+    if func is None:
+        raise AttributeError(
+            "sheets.py میں update_student() یا اس جیسا فنکشن موجود نہیں۔"
+        )
+
+    updated_record = {
+        "StudentName": new_name,
+        "FatherName": new_father,
+        "AssignedTeacher": new_teacher,
+        "Status": new_status,
+        "Notes": notes,
+    }
+
+    result = _call_compatible(
+        func,
+        [
+            (
+                (),
+                {
+                    "old_student_name": old_name,
+                    "old_father_name": old_father,
+                    "old_assigned_teacher": old_teacher,
+                    "student_name": new_name,
+                    "father_name": new_father,
+                    "assigned_teacher": new_teacher,
+                    "status": new_status,
+                    "notes": notes,
+                },
+            ),
+            (
+                (),
+                {
+                    "student_name": old_name,
+                    "father_name": old_father,
+                    "assigned_teacher": old_teacher,
+                    "new_student_name": new_name,
+                    "new_father_name": new_father,
+                    "new_assigned_teacher": new_teacher,
+                    "new_status": new_status,
+                    "notes": notes,
+                },
+            ),
+            (
+                (
+                    old_name,
+                    old_father,
+                    old_teacher,
+                    updated_record,
+                ),
+                {},
+            ),
+            (
+                (
+                    old_name,
+                    old_father,
+                    old_teacher,
+                    new_name,
+                    new_father,
+                    new_teacher,
+                    new_status,
+                    notes,
+                ),
+                {},
+            ),
+            (
+                (
+                    old_name,
+                    old_father,
+                    new_name,
+                    new_father,
+                    new_teacher,
+                    new_status,
+                ),
+                {},
+            ),
+        ],
+    )
+
+    return True if result is None else bool(result)
+
+
+def _delete_student(
+    student_name: str,
+    father_name: str,
+    assigned_teacher: str,
+) -> bool:
+    func = _find_callable(
+        "delete_student",
+        "delete_student_record",
+        "remove_student",
+    )
+
+    if func is None:
+        raise AttributeError(
+            "sheets.py میں delete_student() یا اس جیسا فنکشن موجود نہیں۔"
+        )
+
+    result = _call_compatible(
+        func,
+        [
+            (
+                (),
+                {
+                    "student_name": student_name,
+                    "father_name": father_name,
+                    "assigned_teacher": assigned_teacher,
+                },
+            ),
+            (
+                (
+                    student_name,
+                    father_name,
+                    assigned_teacher,
+                ),
+                {},
+            ),
+            (
+                (
+                    student_name,
+                    father_name,
+                ),
+                {},
+            ),
+        ],
+    )
+
+    return True if result is None else bool(result)
+
+
+def _add_log(action: str):
+    func = getattr(sheets, "add_log", None)
+    if not callable(func):
+        return
+
+    try:
+        func(auth.current_username(), action)
+    except Exception:
+        pass
+
+
+def _display_students_table(df: pd.DataFrame):
+    if df.empty:
+        info_message("کوئی طالب علم موجود نہیں۔")
+        return
+
+    preferred_columns = [
+        "StudentName",
+        "FatherName",
+        "AssignedTeacher",
+        "Status",
+        "DateAdded",
+        "Notes",
+    ]
+
+    columns = [column for column in preferred_columns if column in df.columns]
+    if not columns:
+        columns = list(df.columns)
+
+    display_df = df[columns].rename(columns=STUDENT_COLUMN_LABELS)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.caption(f"کل طلباء: {len(df)}")
+
+
+def _render_filters(students_df: pd.DataFrame) -> pd.DataFrame:
+    filtered = students_df.copy()
+
+    c1, c2, c3 = st.columns(3)
+
+    query = c1.text_input(
+        "🔍 طالب علم یا والد کے نام سے تلاش کریں",
+        key="students_search",
+    ).strip()
+
+    teacher_values = []
+    if "AssignedTeacher" in students_df.columns:
+        teacher_values = sorted(
+            value
+            for value in students_df["AssignedTeacher"]
+            .astype(str)
+            .str.strip()
+            .unique()
+            if value
+        )
+
+    selected_teacher = c2.selectbox(
+        "استاد",
+        ["تمام"] + teacher_values,
+        key="students_teacher_filter",
+    )
+
+    status_values = []
+    if "Status" in students_df.columns:
+        status_values = sorted(
+            value
+            for value in students_df["Status"]
+            .astype(str)
+            .str.strip()
+            .unique()
+            if value
+        )
+
+    selected_status = c3.selectbox(
+        "حیثیت",
+        ["تمام"] + status_values,
+        key="students_status_filter",
+    )
+
+    if query:
+        name_series = filtered.get(
+            "StudentName", pd.Series("", index=filtered.index)
+        ).astype(str)
+        father_series = filtered.get(
+            "FatherName", pd.Series("", index=filtered.index)
+        ).astype(str)
+
+        filtered = filtered[
+            name_series.str.contains(query, case=False, na=False)
+            | father_series.str.contains(query, case=False, na=False)
+        ]
+
+    if selected_teacher != "تمام" and "AssignedTeacher" in filtered.columns:
+        filtered = filtered[
+            filtered["AssignedTeacher"].astype(str).str.strip()
+            == selected_teacher
+        ]
+
+    if selected_status != "تمام" and "Status" in filtered.columns:
+        filtered = filtered[
+            filtered["Status"].astype(str).str.strip()
+            == selected_status
+        ]
+
+    return filtered
+
+
+def _render_exports(df: pd.DataFrame):
+    if df.empty:
+        return
+
+    display_columns = [
+        column
+        for column in [
+            "StudentName",
+            "FatherName",
+            "AssignedTeacher",
+            "Status",
+            "DateAdded",
+            "Notes",
+        ]
+        if column in df.columns
+    ]
+
+    export_df = df[display_columns].rename(columns=STUDENT_COLUMN_LABELS)
+
+    c1, c2 = st.columns(2)
+
+    if callable(to_excel_bytes):
+        try:
+            excel_bytes = to_excel_bytes(export_df, sheet_name="Students")
+            c1.download_button(
+                "📥 ایکسل فائل ڈاؤن لوڈ کریں",
+                data=excel_bytes,
+                file_name="students.xlsx",
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                use_container_width=True,
+            )
+        except Exception as exc:
+            c1.warning(f"ایکسل فائل تیار نہیں ہو سکی: {exc}")
+
+    if callable(dataframe_to_pdf_bytes):
+        try:
+            pdf_bytes = dataframe_to_pdf_bytes(
+                export_df,
+                "طلباء کی فہرست",
+                getattr(
+                    config,
+                    "APP_TITLE",
+                    "مدرسہ حاضری پورٹل",
+                ),
+            )
+            c2.download_button(
+                "📄 پی ڈی ایف ڈاؤن لوڈ کریں",
+                data=pdf_bytes,
+                file_name="students.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        except Exception as exc:
+            c2.warning(f"پی ڈی ایف تیار نہیں ہو سکی: {exc}")
+
+
+def _render_add_student(teachers: list[dict], students_df: pd.DataFrame):
+    if not teachers:
+        warning_message(
+            "طالب علم شامل کرنے سے پہلے کم از کم ایک فعال استاد بنائیں۔"
+        )
+        return
+
+    usernames = [record["Username"] for record in teachers]
+    names = {
+        record["Username"]: record["FullName"]
+        for record in teachers
+    }
+
+    with st.form("add_student_form", clear_on_submit=True):
+        st.subheader("➕ نیا طالب علم شامل کریں")
+
+        c1, c2 = st.columns(2)
+        student_name = c1.text_input("طالب علم کا نام")
+        father_name = c2.text_input("والد کا نام")
+
+        c1, c2 = st.columns(2)
+        teacher = c1.selectbox(
+            "مقرر استاد",
+            usernames,
+            format_func=lambda username: names.get(username, username),
+        )
+        status = c2.selectbox(
+            "حیثیت",
+            _status_options(),
+            index=0,
+        )
+
+        notes = st.text_area("نوٹس", height=90)
+
+        submitted = st.form_submit_button(
+            "✅ طالب علم شامل کریں",
+            use_container_width=True,
+            type="primary",
+        )
+
+    if not submitted:
+        return
+
+    student_name = _clean(student_name)
+    father_name = _clean(father_name)
+    teacher = _clean(teacher)
+
+    if not student_name:
+        error_message("طالب علم کا نام درج کریں۔")
+        return
+
+    if not father_name:
+        error_message("والد کا نام درج کریں۔")
+        return
+
+    if not teacher:
+        error_message("استاد منتخب کریں۔")
+        return
+
+    if not students_df.empty:
+        existing_keys = {
+            _student_key(
+                row.get("StudentName"),
+                row.get("FatherName"),
+                row.get("AssignedTeacher"),
+            )
+            for _, row in students_df.iterrows()
+        }
+
+        if _student_key(student_name, father_name, teacher) in existing_keys:
+            warning_message(
+                "یہ طالب علم اسی والد اور استاد کے ساتھ پہلے سے موجود ہے۔"
+            )
+            return
+
+    try:
+        success = _add_student(
+            student_name,
+            father_name,
+            teacher,
+            status,
+            notes,
+        )
+    except Exception as exc:
+        error_message(f"طالب علم شامل نہیں ہو سکا: {exc}")
+        return
+
+    if success:
+        _add_log(
+            f"طالب علم شامل کیا: {student_name} ولد {father_name} "
+            f"— استاد {names.get(teacher, teacher)}"
+        )
+        success_message("طالب علم کامیابی سے شامل ہو گیا۔")
+        st.rerun()
+    else:
+        error_message("طالب علم شامل نہیں ہو سکا۔")
+
+
+def _render_edit_delete(
+    teachers: list[dict],
     students_df: pd.DataFrame,
-    teacher_username: str,
-) -> pd.DataFrame:
+):
     if students_df.empty:
-        return students_df
+        info_message("ترمیم کے لیے کوئی طالب علم موجود نہیں۔")
+        return
 
-    required = {"StudentName", "FatherName", "AssignedTeacher", "Status"}
+    required = {"StudentName", "FatherName", "AssignedTeacher"}
     if not required.issubset(students_df.columns):
         missing = required - set(students_df.columns)
         error_message(
             "طلباء کی شیٹ میں مطلوبہ کالم موجود نہیں: "
             + "، ".join(sorted(missing))
         )
-        return pd.DataFrame()
-
-    assigned = students_df["AssignedTeacher"].astype(str).map(_normalise)
-    status = students_df["Status"].astype(str).str.strip()
-
-    return students_df[
-        (assigned == _teacher_key(teacher_username))
-        & (status == config.STUDENT_STATUS_ACTIVE)
-    ].copy()
-
-
-def _active_students_for_teacher(teacher_username: str) -> pd.DataFrame:
-    return _filter_students_for_teacher(
-        sheets.get_active_students(), teacher_username
-    )
-
-
-def _is_friday(date_value) -> bool:
-    return pd.Timestamp(date_value).weekday() == config.FRIDAY_WEEKDAY
-
-
-# ==================================================
-# استاد کا مرکزی صفحہ
-# ==================================================
-def render_mark_attendance_page():
-    require_login()
-
-    if not auth.is_teacher():
-        error_message("یہ صفحہ صرف اساتذہ کے لیے مخصوص ہے۔")
-        st.stop()
-
-    teacher_username = auth.current_username()
-    teacher_name = auth.current_fullname()
-
-    st.title("📝 حاضری اور روزانہ تعلیمی کام")
-    st.caption(f"استاد: {teacher_name}")
-
-    tabs = st.tabs(
-        [
-            "✅ حاضری درج کریں",
-            "📖 تعلیمی کام درج کریں",
-            "✏️ آج کے ریکارڈ میں ترمیم",
-        ]
-    )
-
-    with tabs[0]:
-        render_marking_form(teacher_username, teacher_name)
-
-    with tabs[1]:
-        render_daily_work_form(teacher_username, teacher_name)
-
-    with tabs[2]:
-        edit_tabs = st.tabs(["حاضری", "تعلیمی کام"])
-        with edit_tabs[0]:
-            render_teacher_edit_section(teacher_username, teacher_name)
-        with edit_tabs[1]:
-            render_teacher_daily_work_edit_section(
-                teacher_username, teacher_name
-            )
-
-
-# ==================================================
-# حاضری درج کرنا
-# ==================================================
-def render_marking_form(
-    teacher_username: str,
-    teacher_name: str,
-):
-    teacher_username = _clean(teacher_username)
-    teacher_name = _clean(teacher_name)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_date = st.date_input(
-            "📅 تاریخ منتخب کریں",
-            value=pd.to_datetime(today_str()),
-            key=f"mark_date_{teacher_username}",
-        )
-    with col2:
-        attendance_session = st.selectbox(
-            "🕒 حاضری کا وقت منتخب کریں",
-            config.ATTENDANCE_SESSIONS,
-            key=f"mark_session_{teacher_username}",
-        )
-
-    date_str = str(selected_date)
-
-    if _is_friday(selected_date):
-        warning_message(
-            "جمعہ تعلیمی چھٹی ہے۔ ضرورت کی صورت میں ہی ریکارڈ درج کریں۔"
-        )
-
-    active_students = _active_students_for_teacher(teacher_username)
-    if active_students.empty:
-        info_message(f"{teacher_name} کے ساتھ کوئی فعال طالب علم مقرر نہیں ہے۔")
         return
 
-    attendance_df = sheets.get_all_attendance()
-    already_marked = set()
-
-    if not attendance_df.empty:
-        required = {"Date", "AttendanceSession", "StudentName", "FatherName"}
-        if not required.issubset(attendance_df.columns):
-            missing = required - set(attendance_df.columns)
-            error_message(
-                "حاضری کی شیٹ میں مطلوبہ کالم موجود نہیں: "
-                + "، ".join(sorted(missing))
-            )
-            return
-
-        existing = attendance_df[
-            (attendance_df["Date"].astype(str).str.strip() == date_str)
-            & (
-                attendance_df["AttendanceSession"].astype(str).str.strip()
-                == attendance_session
-            )
-        ]
-        already_marked = {
-            _student_key(row.get("StudentName"), row.get("FatherName"))
-            for _, row in existing.iterrows()
-        }
-
-    active_students = active_students.copy()
-    active_students["_StudentKey"] = active_students.apply(
-        lambda row: _student_key(
-            row.get("StudentName"), row.get("FatherName")
-        ),
-        axis=1,
-    )
-    pending = active_students[
-        ~active_students["_StudentKey"].isin(already_marked)
-    ].copy()
-
-    if pending.empty:
-        warning_message(
-            f"{date_str} کی {attendance_session} تمام طلباء کے لیے پہلے ہی درج ہے۔"
-        )
-        return
-
-    marked_count = len(active_students) - len(pending)
-    if marked_count:
-        info_message(
-            f"{marked_count} طلباء کی {attendance_session} پہلے سے درج ہے۔ "
-            "صرف باقی طلباء دکھائے جا رہے ہیں۔"
-        )
-
-    form_key = (
-        f"attendance_form_{teacher_username}_{date_str}_{attendance_session}"
-    )
-
-    with st.form(form_key):
-        st.markdown(
-            f"#### 👥 {teacher_name} کے طلباء — {attendance_session}"
-        )
-        statuses = {}
-
-        for index, (_, student) in enumerate(pending.iterrows()):
-            student_name = _clean(student.get("StudentName"))
-            father_name = _clean(student.get("FatherName"))
-            key = _student_key(student_name, father_name)
-
-            c1, c2 = st.columns([3, 4])
-            with c1:
-                st.markdown(f"**{student_name}**  \nوالد: {father_name}")
-            with c2:
-                statuses[key] = st.radio(
-                    "حیثیت",
-                    config.ATTENDANCE_STATUSES,
-                    horizontal=True,
-                    index=0,
-                    key=f"{form_key}_{index}",
-                    label_visibility="collapsed",
-                )
-            st.divider()
-
-        submitted = st.form_submit_button(
-            "✅ حاضری جمع کروائیں", use_container_width=True
-        )
-
-    if not submitted:
-        return
-
-    records = []
-    for _, student in pending.iterrows():
-        student_name = _clean(student.get("StudentName"))
-        father_name = _clean(student.get("FatherName"))
-        records.append(
-            {
-                "StudentName": student_name,
-                "FatherName": father_name,
-                "Status": statuses[_student_key(student_name, father_name)],
-            }
-        )
-
-    with st.spinner("حاضری محفوظ کی جا رہی ہے..."):
-        success = sheets.submit_attendance(
-            date_str,
-            teacher_username,
-            teacher_name,
-            records,
-            attendance_session,
-        )
-
-    if success:
-        sheets.add_log(
-            auth.current_username(),
-            f"{attendance_session} جمع کروائی: {date_str} برائے "
-            f"{teacher_name} ({len(records)} طلباء)",
-        )
-        success_message("حاضری کامیابی سے محفوظ ہو گئی۔")
-        st.rerun()
-    else:
-        error_message("حاضری محفوظ کرنے میں خرابی پیش آئی۔")
-
-
-# ==================================================
-# روزانہ تعلیمی کام درج کرنا
-# ==================================================
-def render_daily_work_form(
-    teacher_username: str,
-    teacher_name: str,
-):
-    """
-    ایک وقت میں صرف ایک طالب علم کا تعلیمی کام درج کریں۔
-
-    استاد جس طالب علم کا سبق، سبقی، منزل یا پاؤ سن لے،
-    اسی وقت اسی طالب علم کا ریکارڈ محفوظ کر سکتا ہے۔
-    """
-    teacher_username = _clean(teacher_username)
-    teacher_name = _clean(teacher_name)
-
-    selected_date = st.date_input(
-        "📅 تعلیمی کام کی تاریخ",
-        value=pd.to_datetime(today_str()),
-        key=f"work_date_{teacher_username}",
-    )
-    date_str = str(selected_date)
-
-    if _is_friday(selected_date):
-        warning_message(
-            "جمعہ تعلیمی چھٹی ہے۔ ضرورت کی صورت میں ہی ریکارڈ درج کریں۔"
-        )
-
-    students = _active_students_for_teacher(teacher_username)
-    if students.empty:
-        info_message(f"{teacher_name} کے ساتھ کوئی فعال طالب علم مقرر نہیں ہے۔")
-        return
-
-    work_df = sheets.get_all_daily_work()
-    existing_keys = set()
-
-    if not work_df.empty and {
-        "Date", "StudentName", "FatherName"
-    }.issubset(work_df.columns):
-        existing = work_df[
-            work_df["Date"].astype(str).str.strip() == date_str
-        ]
-        existing_keys = {
-            _student_key(row.get("StudentName"), row.get("FatherName"))
-            for _, row in existing.iterrows()
-        }
-
-    students = students.copy()
-    students["_StudentKey"] = students.apply(
-        lambda row: _student_key(
-            row.get("StudentName"), row.get("FatherName")
-        ),
-        axis=1,
-    )
-
-    pending = students[
-        ~students["_StudentKey"].isin(existing_keys)
-    ].copy()
-
-    if pending.empty:
-        success_message(
-            f"✅ {date_str} کا تعلیمی کام تمام طلباء کے لیے درج ہو چکا ہے۔"
-        )
-        return
-
-    completed_count = len(students) - len(pending)
-    if completed_count:
-        info_message(
-            f"{completed_count} طلباء کا آج کا تعلیمی کام پہلے سے محفوظ ہے۔ "
-            "باقی طلباء میں سے ایک طالب علم منتخب کریں۔"
-        )
-
-    pending = pending.reset_index(drop=True)
-
-    student_labels = pending.apply(
+    working = students_df.reset_index(drop=True).copy()
+    working["_label"] = working.apply(
         lambda row: (
-            f"{_clean(row.get('StudentName'))} — ولد "
-            f"{_clean(row.get('FatherName'))}"
+            f"{_clean(row.get('StudentName'))} ولد "
+            f"{_clean(row.get('FatherName'))} | "
+            f"{_clean(row.get('AssignedTeacher'))}"
         ),
         axis=1,
-    ).tolist()
+    )
 
     selected_label = st.selectbox(
-        "👤 طالب علم منتخب کریں",
-        student_labels,
-        key=f"daily_work_student_{teacher_username}_{date_str}",
+        "طالب علم منتخب کریں",
+        working["_label"].tolist(),
+        key="student_edit_select",
     )
 
-    selected_index = student_labels.index(selected_label)
-    student = pending.iloc[selected_index]
+    row = working[working["_label"] == selected_label].iloc[0]
 
-    name = _clean(student.get("StudentName"))
-    father = _clean(student.get("FatherName"))
+    old_name = _clean(row.get("StudentName"))
+    old_father = _clean(row.get("FatherName"))
+    old_teacher = _clean(row.get("AssignedTeacher"))
 
-    widget_prefix = (
-        f"daily_work_{teacher_username}_{date_str}_{selected_index}"
-    )
-
-    st.markdown(f"### {name} — ولد {father}")
-    st.caption(
-        "طالب علم کا کام سننے کے فوراً بعد محفوظ کریں۔ "
-        "جو کام نہیں ہوا اس کے خانے خالی چھوڑ دیں۔"
-    )
-
-    s1, s2, s3, s4 = st.tabs(["سبق", "سبقی", "منزل", "پاؤ"])
-
-    with s1:
-        c1, c2 = st.columns(2)
-        sabaq_surah = c1.text_input(
-            "سورت",
-            key=f"{widget_prefix}_ss",
-        )
-        sabaq_ayah = c2.text_input(
-            "آیت/آیات",
-            key=f"{widget_prefix}_sa",
-        )
-
-    with s2:
-        c1, c2 = st.columns(2)
-        sabqi_surah = c1.text_input(
-            "سورت",
-            key=f"{widget_prefix}_qs",
-        )
-        sabqi_ayah = c2.text_input(
-            "آیت/آیات",
-            key=f"{widget_prefix}_qa",
-        )
-
-    with s3:
-        c1, c2 = st.columns(2)
-
-        manzil_juz = c1.selectbox(
-            "پارہ",
-            [""] + config.JUZ_NUMBERS,
-            key=f"{widget_prefix}_mj",
-        )
-
-        manzil_amount = c2.selectbox(
-            "مقدار",
-            ["", "مکمل", "نصف", "پاؤ"],
-            key=f"{widget_prefix}_ma",
-        )
-
-        if manzil_amount == "نصف":
-            manzil_half = st.selectbox(
-                "نصف منتخب کریں",
-                ["", "نصف اول", "نصف دوم"],
-                key=f"{widget_prefix}_mh",
-            )
-        elif manzil_amount == "پاؤ":
-            manzil_half = st.selectbox(
-                "پاؤ منتخب کریں",
-                ["", "پاؤ 1", "پاؤ 2", "پاؤ 3", "پاؤ 4"],
-                key=f"{widget_prefix}_mh",
-            )
-        else:
-            manzil_half = ""
-
-    with s4:
-        c1, c2 = st.columns(2)
-        pao_juz = c1.selectbox(
-            "پارہ",
-            [""] + config.JUZ_NUMBERS,
-            key=f"{widget_prefix}_pj",
-        )
-        pao_quarter = c2.selectbox(
-            "پاؤ نمبر",
-            [""] + config.PAO_QUARTERS,
-            key=f"{widget_prefix}_pq",
-        )
-
-    submitted = st.button(
-        "💾 اس طالب علم کا تعلیمی کام محفوظ کریں",
-        key=f"{widget_prefix}_save",
-        use_container_width=True,
-        type="primary",
-    )
-
-    if not submitted:
-        return
-
-    record = {
-        "StudentName": name,
-        "FatherName": father,
-        "SabaqSurah": sabaq_surah,
-        "SabaqAyah": sabaq_ayah,
-        "SabqiSurah": sabqi_surah,
-        "SabqiAyah": sabqi_ayah,
-        "ManzilJuz": manzil_juz,
-        "ManzilAmount": manzil_amount,
-        "ManzilHalf": manzil_half,
-        "PaoJuz": pao_juz,
-        "PaoQuarter": pao_quarter,
+    usernames = [record["Username"] for record in teachers]
+    names = {
+        record["Username"]: record["FullName"]
+        for record in teachers
     }
 
-    with st.spinner("تعلیمی کام محفوظ کیا جا رہا ہے..."):
-        success = sheets.submit_daily_work(
-            date_str,
-            teacher_username,
-            teacher_name,
-            [record],
+    if old_teacher and old_teacher not in usernames:
+        usernames.append(old_teacher)
+        names[old_teacher] = old_teacher
+
+    with st.form("edit_student_form"):
+        st.subheader("✏️ طالب علم کی معلومات تبدیل کریں")
+
+        c1, c2 = st.columns(2)
+        new_name = c1.text_input(
+            "طالب علم کا نام",
+            value=old_name,
+        )
+        new_father = c2.text_input(
+            "والد کا نام",
+            value=old_father,
         )
 
-    if success:
-        sheets.add_log(
-            auth.current_username(),
-            f"روزانہ تعلیمی کام محفوظ کیا: {date_str} — "
-            f"{name} ولد {father} — استاد {teacher_name}",
-        )
-        success_message(
-            f"{name} ولد {father} کا تعلیمی کام کامیابی سے محفوظ ہو گیا۔"
-        )
-        st.rerun()
-    else:
-        error_message("تعلیمی کام محفوظ کرنے میں خرابی پیش آئی۔")
+        c1, c2 = st.columns(2)
 
-
-# ==================================================
-# استاد کی ترمیم
-# ==================================================
-def render_teacher_edit_section(
-    teacher_username: str,
-    teacher_name: str,
-):
-    today = today_str()
-    attendance_df = sheets.get_all_attendance()
-
-    if attendance_df.empty:
-        info_message("آج کی کوئی حاضری موجود نہیں۔")
-        return
-
-    required = {
-        "Date", "AttendanceSession", "StudentName", "FatherName",
-        "TeacherUsername", "Status"
-    }
-    if not required.issubset(attendance_df.columns):
-        error_message("حاضری کی شیٹ کے کالم نامکمل ہیں۔")
-        return
-
-    records = attendance_df[
-        (attendance_df["Date"].astype(str).str.strip() == today)
-        & (
-            attendance_df["TeacherUsername"].astype(str).map(_normalise)
-            == _teacher_key(teacher_username)
-        )
-    ].copy()
-
-    if records.empty:
-        info_message("آپ نے آج کوئی حاضری درج نہیں کی۔")
-        return
-
-    session = st.selectbox(
-        "حاضری کا وقت",
-        config.ATTENDANCE_SESSIONS,
-        key=f"teacher_edit_session_{teacher_username}",
-    )
-    records = records[
-        records["AttendanceSession"].astype(str).str.strip() == session
-    ]
-
-    if records.empty:
-        info_message(f"آج کی {session} موجود نہیں۔")
-        return
-
-    st.caption(f"استاد: {teacher_name} — {today}")
-    for index, (_, record) in enumerate(records.iterrows()):
-        name = _clean(record.get("StudentName"))
-        father = _clean(record.get("FatherName"))
-        current = _clean(record.get("Status"))
-        status_index = (
-            config.ATTENDANCE_STATUSES.index(current)
-            if current in config.ATTENDANCE_STATUSES else 0
+        teacher_index = (
+            usernames.index(old_teacher)
+            if old_teacher in usernames
+            else 0
         )
 
-        c1, c2, c3 = st.columns([3, 2, 1])
-        c1.markdown(f"**{name}**  \nوالد: {father}")
+        new_teacher = c1.selectbox(
+            "مقرر استاد",
+            usernames,
+            index=teacher_index,
+            format_func=lambda username: names.get(username, username),
+        )
+
+        status_options = _status_options()
+        current_status = _clean(row.get("Status")) or _active_status()
+        if current_status not in status_options:
+            status_options.append(current_status)
+
         new_status = c2.selectbox(
             "حیثیت",
-            config.ATTENDANCE_STATUSES,
-            index=status_index,
-            key=f"teacher_att_edit_{session}_{index}_{name}_{father}",
-            label_visibility="collapsed",
-        )
-        clicked = c3.button(
-            "محفوظ کریں",
-            key=f"teacher_att_save_{session}_{index}_{name}_{father}",
+            status_options,
+            index=status_options.index(current_status),
         )
 
-        if clicked:
-            if new_status == current:
-                info_message("حیثیت میں کوئی تبدیلی نہیں کی گئی۔")
-                continue
-            success = sheets.update_attendance_record(
-                today,
-                name,
-                father,
-                teacher_username,
+        notes = st.text_area(
+            "نوٹس",
+            value=_clean(row.get("Notes")),
+            height=90,
+        )
+
+        save = st.form_submit_button(
+            "💾 تبدیلیاں محفوظ کریں",
+            use_container_width=True,
+            type="primary",
+        )
+
+    if save:
+        new_name = _clean(new_name)
+        new_father = _clean(new_father)
+        new_teacher = _clean(new_teacher)
+
+        if not new_name or not new_father or not new_teacher:
+            error_message("نام، والد کا نام اور استاد لازمی ہیں۔")
+            return
+
+        try:
+            success = _update_student(
+                old_name,
+                old_father,
+                old_teacher,
+                new_name,
+                new_father,
+                new_teacher,
                 new_status,
-                session,
+                notes,
             )
-            if success:
-                sheets.add_log(
-                    auth.current_username(),
-                    f"اپنی {session} میں ترمیم: {name} ولد {father} — {new_status}",
+        except Exception as exc:
+            error_message(f"معلومات اپ ڈیٹ نہیں ہو سکیں: {exc}")
+            return
+
+        if success:
+            _add_log(
+                f"طالب علم کی معلومات تبدیل کیں: "
+                f"{old_name} ولد {old_father} → "
+                f"{new_name} ولد {new_father}"
+            )
+            success_message("طالب علم کی معلومات اپ ڈیٹ ہو گئیں۔")
+            st.rerun()
+        else:
+            error_message("طالب علم کی معلومات اپ ڈیٹ نہیں ہو سکیں۔")
+
+    st.divider()
+    st.subheader("🗑️ طالب علم حذف کریں")
+
+    confirm_key = "student_delete_confirmation"
+
+    if st.button(
+        "🗑️ منتخب طالب علم حذف کریں",
+        key="student_delete_button",
+        use_container_width=True,
+    ):
+        st.session_state[confirm_key] = selected_label
+
+    if st.session_state.get(confirm_key) == selected_label:
+        warning_message(
+            f"کیا آپ واقعی {old_name} ولد {old_father} کو حذف کرنا چاہتے ہیں؟"
+        )
+
+        yes, no = st.columns(2)
+
+        if yes.button(
+            "ہاں، حذف کریں",
+            key="student_delete_yes",
+            use_container_width=True,
+        ):
+            try:
+                success = _delete_student(
+                    old_name,
+                    old_father,
+                    old_teacher,
                 )
-                success_message(f"{name} کی حاضری اپ ڈیٹ ہو گئی۔")
+            except Exception as exc:
+                error_message(f"طالب علم حذف نہیں ہو سکا: {exc}")
+                return
+
+            if success:
+                _add_log(
+                    f"طالب علم حذف کیا: {old_name} ولد {old_father} "
+                    f"— استاد {old_teacher}"
+                )
+                st.session_state.pop(confirm_key, None)
+                success_message("طالب علم کامیابی سے حذف ہو گیا۔")
                 st.rerun()
             else:
-                error_message("حاضری اپ ڈیٹ نہیں ہو سکی۔")
+                error_message("طالب علم حذف نہیں ہو سکا۔")
+
+        if no.button(
+            "منسوخ کریں",
+            key="student_delete_no",
+            use_container_width=True,
+        ):
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
 
 
-def render_teacher_daily_work_edit_section(
-    teacher_username: str,
-    teacher_name: str,
-):
-    today = today_str()
-    work_df = sheets.get_all_daily_work()
-    if work_df.empty:
-        info_message("آج کا کوئی تعلیمی ریکارڈ موجود نہیں۔")
-        return
-
-    required = {"Date", "StudentName", "FatherName", "TeacherUsername"}
-    if not required.issubset(work_df.columns):
-        error_message("تعلیمی کام کی شیٹ کے کالم نامکمل ہیں۔")
-        return
-
-    records = work_df[
-        (work_df["Date"].astype(str).str.strip() == today)
-        & (
-            work_df["TeacherUsername"].astype(str).map(_normalise)
-            == _teacher_key(teacher_username)
-        )
-    ].copy()
-
-    if records.empty:
-        info_message("آپ نے آج کوئی تعلیمی کام درج نہیں کیا۔")
-        return
-
-    labels = [
-        f"{_clean(row.get('StudentName'))} ولد {_clean(row.get('FatherName'))}"
-        for _, row in records.iterrows()
-    ]
-    selected_label = st.selectbox(
-        "طالب علم منتخب کریں", labels, key="teacher_work_edit_student"
-    )
-    selected_index = labels.index(selected_label)
-    row = records.iloc[selected_index]
-
-    _render_daily_work_editor(
-        row=row,
-        key_prefix="teacher_work_edit",
-        allow_delete=False,
-        teacher_username=teacher_username,
-        teacher_name=teacher_name,
-    )
-
-
-# ==================================================
-# منتظم کا مرکزی صفحہ
-# ==================================================
-def render_admin_attendance_page():
+def render_students_page():
+    """
+    app.py اسی فنکشن کو کال کرتا ہے۔
+    """
     require_login()
+
     if not auth.is_admin():
         error_message("یہ صفحہ صرف منتظم کے لیے مخصوص ہے۔")
         st.stop()
 
-    st.title("📅 حاضری اور تعلیمی کام کا مکمل ریکارڈ")
+    st.title("🎓 طلباء کا انتظام")
+
+    try:
+        students_df = _get_all_students()
+    except Exception as exc:
+        error_message(f"طلباء کا ریکارڈ حاصل نہیں ہو سکا: {exc}")
+        return
+
+    teachers = _get_teacher_records()
+
     tabs = st.tabs(
         [
-            "📋 حاضری کا ریکارڈ",
-            "📖 تعلیمی کام",
-            "➕ استاد کی طرف سے اندراج",
-            "📊 شماریات",
+            "📋 طلباء کی فہرست",
+            "➕ نیا طالب علم",
+            "✏️ ترمیم یا حذف",
         ]
     )
 
     with tabs[0]:
-        render_admin_filters_and_records()
+        filtered = _render_filters(students_df)
+        _display_students_table(filtered)
+        st.divider()
+        _render_exports(filtered)
+
     with tabs[1]:
-        render_admin_daily_work_records()
+        _render_add_student(teachers, students_df)
+
     with tabs[2]:
-        render_admin_mark_on_behalf()
-    with tabs[3]:
-        render_attendance_statistics()
+        _render_edit_delete(teachers, students_df)
 
 
-def render_admin_filters_and_records():
-    df = sheets.get_all_attendance()
-    if df.empty:
-        info_message("ابھی تک کوئی حاضری ریکارڈ موجود نہیں۔")
-        return
-
-    col1, col2, col3, col4 = st.columns(4)
-    date_filter = col1.date_input(
-        "تاریخ", value=None, key="admin_att_date_filter"
-    )
-    session_filter = col2.selectbox(
-        "حاضری کا وقت", ["تمام"] + config.ATTENDANCE_SESSIONS,
-        key="admin_att_session_filter",
-    )
-    teacher_options = ["تمام"] + sorted(
-        [x for x in df.get("TeacherName", pd.Series(dtype=str)).astype(str).unique() if x]
-    )
-    teacher_filter = col3.selectbox(
-        "استاد", teacher_options, key="admin_att_teacher_filter"
-    )
-    status_filter = col4.selectbox(
-        "حیثیت", ["تمام"] + config.ATTENDANCE_STATUSES,
-        key="admin_att_status_filter",
-    )
-
-    query = st.text_input(
-        "🔍 طالب علم یا والد کے نام سے تلاش کریں",
-        key="admin_att_search",
-    ).strip()
-
-    filtered = df.copy()
-    if date_filter:
-        filtered = filtered[filtered["Date"].astype(str) == str(date_filter)]
-    if session_filter != "تمام":
-        filtered = filtered[
-            filtered["AttendanceSession"].astype(str) == session_filter
-        ]
-    if teacher_filter != "تمام":
-        filtered = filtered[
-            filtered["TeacherName"].astype(str) == teacher_filter
-        ]
-    if status_filter != "تمام":
-        filtered = filtered[filtered["Status"].astype(str) == status_filter]
-    if query:
-        mask = (
-            filtered["StudentName"].astype(str).str.contains(query, case=False, na=False)
-            | filtered["FatherName"].astype(str).str.contains(query, case=False, na=False)
-        )
-        filtered = filtered[mask]
-
-    display_attendance_table(filtered)
-    st.divider()
-    st.subheader("✏️ حاضری میں ترمیم یا حذف")
-    render_edit_delete_section(filtered, "admin_attendance")
-
-
-def render_admin_search():
-    """پرانے app.py یا دوسرے modules کے لیے برقرار رکھا گیا فنکشن۔"""
-    render_admin_filters_and_records()
-
-
-def render_admin_daily_work_records():
-    df = sheets.get_all_daily_work()
-    if df.empty:
-        info_message("ابھی تک کوئی تعلیمی ریکارڈ موجود نہیں۔")
-        return
-
-    c1, c2 = st.columns(2)
-    date_filter = c1.date_input(
-        "تاریخ", value=None, key="admin_work_date_filter"
-    )
-    teacher_options = ["تمام"] + sorted(
-        [x for x in df.get("TeacherName", pd.Series(dtype=str)).astype(str).unique() if x]
-    )
-    teacher_filter = c2.selectbox(
-        "استاد", teacher_options, key="admin_work_teacher_filter"
-    )
-    query = st.text_input(
-        "🔍 طالب علم یا والد کے نام سے تلاش کریں",
-        key="admin_work_search",
-    ).strip()
-
-    filtered = df.copy()
-    if date_filter:
-        filtered = filtered[filtered["Date"].astype(str) == str(date_filter)]
-    if teacher_filter != "تمام":
-        filtered = filtered[
-            filtered["TeacherName"].astype(str) == teacher_filter
-        ]
-    if query:
-        mask = (
-            filtered["StudentName"].astype(str).str.contains(query, case=False, na=False)
-            | filtered["FatherName"].astype(str).str.contains(query, case=False, na=False)
-        )
-        filtered = filtered[mask]
-
-    display_daily_work_table(filtered)
-    if filtered.empty:
-        return
-
-    st.divider()
-    st.subheader("✏️ تعلیمی ریکارڈ میں ترمیم یا حذف")
-    working = filtered.reset_index(drop=True).copy()
-    labels = working.apply(
-        lambda row: (
-            f"{_clean(row.get('Date'))} | {_clean(row.get('StudentName'))} "
-            f"ولد {_clean(row.get('FatherName'))} | {_clean(row.get('TeacherName'))}"
-        ),
-        axis=1,
-    ).tolist()
-    selected = st.selectbox(
-        "ریکارڈ منتخب کریں", labels, key="admin_work_record_select"
-    )
-    row = working.iloc[labels.index(selected)]
-    _render_daily_work_editor(
-        row=row,
-        key_prefix="admin_work_editor",
-        allow_delete=True,
-        teacher_username=_clean(row.get("TeacherUsername")),
-        teacher_name=_clean(row.get("TeacherName")),
-    )
-
-
-def render_admin_mark_on_behalf():
-    teachers = _get_teacher_records()
-    if not teachers:
-        info_message("کوئی فعال استاد موجود نہیں۔")
-        return
-
-    usernames = [x["Username"] for x in teachers]
-    names = {x["Username"]: x["FullName"] for x in teachers}
-    selected_username = st.selectbox(
-        "استاد منتخب کریں",
-        usernames,
-        format_func=lambda x: names.get(x, x),
-        key="admin_teacher_on_behalf",
-    )
-    selected_name = names.get(selected_username, selected_username)
-
-    sub_tabs = st.tabs(["حاضری", "تعلیمی کام"])
-    with sub_tabs[0]:
-        render_marking_form(selected_username, selected_name)
-    with sub_tabs[1]:
-        render_daily_work_form(selected_username, selected_name)
-
-
-def render_attendance_statistics():
-    selected_date = st.date_input(
-        "تاریخ منتخب کریں",
-        value=pd.to_datetime(today_str()),
-        key="attendance_stats_date",
-    )
-    date_str = str(selected_date)
-    attendance_df = sheets.get_all_attendance()
-    active_students = sheets.get_active_students()
-    total_students = len(active_students)
-
-    if attendance_df.empty:
-        day = pd.DataFrame()
-    else:
-        day = attendance_df[
-            attendance_df["Date"].astype(str).str.strip() == date_str
-        ].copy()
-
-    session = st.selectbox(
-        "حاضری کا وقت",
-        config.ATTENDANCE_SESSIONS,
-        key="attendance_stats_session",
-    )
-    if not day.empty:
-        day = day[day["AttendanceSession"].astype(str) == session]
-
-    counts = {
-        status: int((day["Status"].astype(str) == status).sum())
-        if not day.empty else 0
-        for status in config.ATTENDANCE_STATUSES
-    }
-    submitted_students = len(day)
-    missing = max(total_students - submitted_students, 0)
-
-    cols = st.columns(6)
-    cards = [
-        ("کل فعال طلباء", total_students, "🎓"),
-        ("حاضر", counts.get(config.STATUS_PRESENT, 0), "✅"),
-        ("غیر حاضر", counts.get(config.STATUS_ABSENT, 0), "❌"),
-        ("تاخیر سے حاضر", counts.get(config.STATUS_LATE, 0), "⏰"),
-        ("رخصت", counts.get(config.STATUS_LEAVE, 0), "📝"),
-        ("غیر درج شدہ", missing, "⚠️"),
-    ]
-    for column, (title, value, icon) in zip(cols, cards):
-        with column:
-            render_stat_card(title, value, icon)
-
-    if day.empty:
-        info_message(f"{date_str} کی {session} ابھی درج نہیں ہوئی۔")
-    else:
-        display_attendance_table(day)
-
-
-# ==================================================
-# مشترکہ جدول اور ترمیم کے فنکشنز
-# ==================================================
-def display_attendance_table(df: pd.DataFrame):
-    if df.empty:
-        info_message("کوئی ریکارڈ نہیں ملا۔")
-        return
-
-    columns = [x for x in config.ATTENDANCE_HEADERS if x in df.columns]
-    display_df = df[columns].rename(columns=ATTENDANCE_COLUMN_LABELS)
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-    st.caption(f"کل ریکارڈز: {len(df)}")
-
-
-def display_daily_work_table(df: pd.DataFrame):
-    if df.empty:
-        info_message("کوئی ریکارڈ نہیں ملا۔")
-        return
-
-    columns = [x for x in config.DAILY_WORK_HEADERS if x in df.columns]
-    display_df = df[columns].rename(columns=DAILY_WORK_COLUMN_LABELS)
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-    st.caption(f"کل ریکارڈز: {len(df)}")
-
-
-def render_edit_delete_section(
-    filtered_df: pd.DataFrame,
-    key_prefix: str,
-):
-    if filtered_df.empty:
-        info_message("ترمیم کے لیے کوئی ریکارڈ دستیاب نہیں۔")
-        return
-
-    working = filtered_df.reset_index(drop=True).copy()
-    working["_label"] = working.apply(
-        lambda row: (
-            f"{_clean(row.get('Date'))} | "
-            f"{_clean(row.get('AttendanceSession'))} | "
-            f"{_clean(row.get('StudentName'))} ولد "
-            f"{_clean(row.get('FatherName'))} | "
-            f"{_clean(row.get('TeacherName'))}"
-        ),
-        axis=1,
-    )
-    selected_label = st.selectbox(
-        "ریکارڈ منتخب کریں",
-        working["_label"].tolist(),
-        key=f"{key_prefix}_select",
-    )
-    row = working[working["_label"] == selected_label].iloc[0]
-
-    selected_date = _clean(row.get("Date"))
-    session = _clean(row.get("AttendanceSession"))
-    name = _clean(row.get("StudentName"))
-    father = _clean(row.get("FatherName"))
-    username = _clean(row.get("TeacherUsername"))
-    current = _clean(row.get("Status"))
-    status_index = (
-        config.ATTENDANCE_STATUSES.index(current)
-        if current in config.ATTENDANCE_STATUSES else 0
-    )
-
-    c1, c2 = st.columns(2)
-    with c1:
-        new_status = st.selectbox(
-            "نئی حیثیت",
-            config.ATTENDANCE_STATUSES,
-            index=status_index,
-            key=f"{key_prefix}_status",
-        )
-        if st.button(
-            "✅ حیثیت اپ ڈیٹ کریں",
-            key=f"{key_prefix}_update",
-            use_container_width=True,
-        ):
-            success = sheets.update_attendance_record(
-                selected_date,
-                name,
-                father,
-                username,
-                new_status,
-                session,
-            )
-            if success:
-                sheets.add_log(
-                    auth.current_username(),
-                    f"منتظم نے {session} میں ترمیم کی: "
-                    f"{name} ولد {father} — {new_status} ({selected_date})",
-                )
-                success_message("حاضری کامیابی سے اپ ڈیٹ ہو گئی۔")
-                st.rerun()
-            else:
-                error_message("حاضری اپ ڈیٹ نہیں ہو سکی۔")
-
-    with c2:
-        confirm_key = f"{key_prefix}_confirm_delete"
-        if st.button(
-            "🗑️ یہ ریکارڈ حذف کریں",
-            key=f"{key_prefix}_delete",
-            use_container_width=True,
-        ):
-            st.session_state[confirm_key] = selected_label
-
-        if st.session_state.get(confirm_key) == selected_label:
-            warning_message(
-                f"کیا آپ واقعی {name} ولد {father} کی {session} حذف کرنا چاہتے ہیں؟"
-            )
-            yes, no = st.columns(2)
-            if yes.button(
-                "ہاں، حذف کریں",
-                key=f"{key_prefix}_yes",
-                use_container_width=True,
-            ):
-                success = sheets.delete_attendance_record(
-                    selected_date,
-                    name,
-                    father,
-                    username,
-                    session,
-                )
-                if success:
-                    sheets.add_log(
-                        auth.current_username(),
-                        f"منتظم نے {session} حذف کی: "
-                        f"{name} ولد {father} ({selected_date})",
-                    )
-                    st.session_state.pop(confirm_key, None)
-                    success_message("ریکارڈ کامیابی سے حذف ہو گیا۔")
-                    st.rerun()
-                else:
-                    error_message("ریکارڈ حذف نہیں ہو سکا۔")
-            if no.button(
-                "منسوخ کریں",
-                key=f"{key_prefix}_no",
-                use_container_width=True,
-            ):
-                st.session_state.pop(confirm_key, None)
-                st.rerun()
-
-
-def _select_index(options: list, value) -> int:
-    cleaned = _clean(value)
-    return options.index(cleaned) if cleaned in options else 0
-
-
-def _render_daily_work_editor(
-    row: pd.Series,
-    key_prefix: str,
-    allow_delete: bool,
-    teacher_username: str,
-    teacher_name: str,
-):
-    date = _clean(row.get("Date"))
-    name = _clean(row.get("StudentName"))
-    father = _clean(row.get("FatherName"))
-
-    unique_prefix = (
-        f"{key_prefix}_{_normalise(name)}_{_normalise(father)}_{date}"
-    )
-
-    st.markdown(f"**{name}** — ولد {father} — {date}")
-
-    c1, c2 = st.columns(2)
-    sabaq_surah = c1.text_input(
-        "سبق: سورت",
-        value=_clean(row.get("SabaqSurah")),
-        key=f"{unique_prefix}_sabaq_surah",
-    )
-    sabaq_ayah = c2.text_input(
-        "سبق: آیت/آیات",
-        value=_clean(row.get("SabaqAyah")),
-        key=f"{unique_prefix}_sabaq_ayah",
-    )
-
-    c1, c2 = st.columns(2)
-    sabqi_surah = c1.text_input(
-        "سبقی: سورت",
-        value=_clean(row.get("SabqiSurah")),
-        key=f"{unique_prefix}_sabqi_surah",
-    )
-    sabqi_ayah = c2.text_input(
-        "سبقی: آیت/آیات",
-        value=_clean(row.get("SabqiAyah")),
-        key=f"{unique_prefix}_sabqi_ayah",
-    )
-
-    juz_options = [""] + [str(x) for x in config.JUZ_NUMBERS]
-    amount_options = ["", "مکمل", "نصف", "پاؤ"]
-    half_options = ["", "نصف اول", "نصف دوم"]
-    manzil_quarter_options = [
-        "",
-        "پاؤ 1",
-        "پاؤ 2",
-        "پاؤ 3",
-        "پاؤ 4",
-    ]
-    quarter_options = [""] + [str(x) for x in config.PAO_QUARTERS]
-
-    current_amount = _clean(row.get("ManzilAmount"))
-    current_part = _clean(row.get("ManzilHalf"))
-
-    c1, c2 = st.columns(2)
-
-    manzil_juz = c1.selectbox(
-        "منزل: پارہ",
-        juz_options,
-        index=_select_index(juz_options, row.get("ManzilJuz")),
-        key=f"{unique_prefix}_manzil_juz",
-    )
-
-    manzil_amount = c2.selectbox(
-        "منزل: مقدار",
-        amount_options,
-        index=_select_index(amount_options, current_amount),
-        key=f"{unique_prefix}_manzil_amount",
-    )
-
-    if manzil_amount == "نصف":
-        manzil_half = st.selectbox(
-            "منزل: نصف منتخب کریں",
-            half_options,
-            index=_select_index(half_options, current_part),
-            key=f"{unique_prefix}_manzil_part",
-        )
-    elif manzil_amount == "پاؤ":
-        manzil_half = st.selectbox(
-            "منزل: پاؤ منتخب کریں",
-            manzil_quarter_options,
-            index=_select_index(manzil_quarter_options, current_part),
-            key=f"{unique_prefix}_manzil_part",
-        )
-    else:
-        manzil_half = ""
-
-    c1, c2 = st.columns(2)
-    pao_juz = c1.selectbox(
-        "پاؤ: پارہ",
-        juz_options,
-        index=_select_index(juz_options, row.get("PaoJuz")),
-        key=f"{unique_prefix}_pao_juz",
-    )
-    pao_quarter = c2.selectbox(
-        "پاؤ نمبر",
-        quarter_options,
-        index=_select_index(quarter_options, row.get("PaoQuarter")),
-        key=f"{unique_prefix}_pao_quarter",
-    )
-
-    save = st.button(
-        "💾 تبدیلیاں محفوظ کریں",
-        key=f"{unique_prefix}_save",
-        use_container_width=True,
-        type="primary",
-    )
-
-    if save:
-        success = sheets.update_daily_work_record(
-            date=date,
-            student_name=name,
-            father_name=father,
-            teacher_username=teacher_username,
-            teacher_name=teacher_name,
-            sabaq_surah=sabaq_surah,
-            sabaq_ayah=sabaq_ayah,
-            sabqi_surah=sabqi_surah,
-            sabqi_ayah=sabqi_ayah,
-            manzil_juz=manzil_juz,
-            manzil_amount=manzil_amount,
-            manzil_half=manzil_half,
-            pao_juz=pao_juz,
-            pao_quarter=pao_quarter,
-        )
-
-        if success:
-            sheets.add_log(
-                auth.current_username(),
-                f"تعلیمی ریکارڈ میں ترمیم: {name} ولد {father} ({date})",
-            )
-            success_message("تعلیمی ریکارڈ کامیابی سے اپ ڈیٹ ہو گیا۔")
-            st.rerun()
-        else:
-            error_message("تعلیمی ریکارڈ اپ ڈیٹ نہیں ہو سکا۔")
-
-    if allow_delete:
-        confirm_key = f"{unique_prefix}_delete_confirm"
-
-        if st.button(
-            "🗑️ تعلیمی ریکارڈ حذف کریں",
-            key=f"{unique_prefix}_delete_button",
-            use_container_width=True,
-        ):
-            st.session_state[confirm_key] = True
-
-        if st.session_state.get(confirm_key):
-            warning_message("کیا آپ واقعی یہ تعلیمی ریکارڈ حذف کرنا چاہتے ہیں؟")
-
-            yes, no = st.columns(2)
-
-            if yes.button(
-                "ہاں، حذف کریں",
-                key=f"{unique_prefix}_delete_yes",
-                use_container_width=True,
-            ):
-                success = sheets.delete_daily_work_record(
-                    date,
-                    name,
-                    father,
-                    teacher_username,
-                )
-
-                if success:
-                    sheets.add_log(
-                        auth.current_username(),
-                        f"تعلیمی ریکارڈ حذف کیا: "
-                        f"{name} ولد {father} ({date})",
-                    )
-                    st.session_state.pop(confirm_key, None)
-                    success_message("تعلیمی ریکارڈ حذف ہو گیا۔")
-                    st.rerun()
-                else:
-                    error_message("تعلیمی ریکارڈ حذف نہیں ہو سکا۔")
-
-            if no.button(
-                "منسوخ کریں",
-                key=f"{unique_prefix}_delete_no",
-                use_container_width=True,
-            ):
-                st.session_state.pop(confirm_key, None)
-                st.rerun()
+# پرانے app.py یا دوسرے modules کے لیے اختیاری alias
+def render_student_page():
+    render_students_page()
