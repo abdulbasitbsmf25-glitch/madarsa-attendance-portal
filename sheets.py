@@ -247,11 +247,12 @@ def get_spreadsheet():
 
 def clear_cache():
     """
-    Cached Google connection صاف کریں۔
+    Cached Google connection اور initialization حالت صاف کریں۔
     Backup، restore یا manual refresh کے بعد استعمال کریں۔
     """
     get_client.clear()
     get_spreadsheet.clear()
+    st.session_state.pop("_database_initialized", None)
 
 
 # ==================================================
@@ -315,40 +316,39 @@ def _get_or_create_worksheet(
         )
         st.stop()
 
-    _worksheet_headers(worksheet, headers)
     return worksheet
 
 
 def initialize_database():
     """
     تمام مطلوبہ Worksheets بنائیں۔
-    Users Worksheet خالی ہونے پر default users شامل کریں۔
-    """
-    users_ws = _get_or_create_worksheet(
-        config.SHEET_USERS,
-        config.USERS_HEADERS,
-    )
 
-    _get_or_create_worksheet(
-        config.SHEET_STUDENTS,
-        config.STUDENTS_HEADERS,
-    )
-    _get_or_create_worksheet(
-        config.SHEET_ATTENDANCE,
-        config.ATTENDANCE_HEADERS,
-    )
-    _get_or_create_worksheet(
-        config.SHEET_DAILY_WORK,
-        config.DAILY_WORK_HEADERS,
-    )
-    _get_or_create_worksheet(
-        config.SHEET_LOGS,
-        config.LOGS_HEADERS,
-    )
-    _get_or_create_worksheet(
-        config.SHEET_SETTINGS,
-        config.SETTINGS_HEADERS,
-    )
+    Google Sheets API کی 429 limit سے بچنے کے لیے یہ initialization
+    ایک Streamlit session میں صرف ایک بار چلتی ہے۔
+    """
+    if st.session_state.get("_database_initialized"):
+        return
+
+    worksheet_specs = [
+        (config.SHEET_USERS, config.USERS_HEADERS),
+        (config.SHEET_STUDENTS, config.STUDENTS_HEADERS),
+        (config.SHEET_ATTENDANCE, config.ATTENDANCE_HEADERS),
+        (config.SHEET_DAILY_WORK, config.DAILY_WORK_HEADERS),
+        (config.SHEET_LOGS, config.LOGS_HEADERS),
+        (config.SHEET_SETTINGS, config.SETTINGS_HEADERS),
+    ]
+
+    worksheets = {}
+
+    for sheet_name, headers in worksheet_specs:
+        worksheet = _get_or_create_worksheet(
+            sheet_name,
+            headers,
+        )
+        _worksheet_headers(worksheet, headers)
+        worksheets[sheet_name] = worksheet
+
+    users_ws = worksheets[config.SHEET_USERS]
 
     try:
         records = users_ws.get_all_records()
@@ -360,29 +360,29 @@ def initialize_database():
         )
         st.stop()
 
-    if records:
-        return
+    if not records:
+        rows = []
 
-    rows = []
+        for user in config.DEFAULT_USERS:
+            rows.append(
+                [
+                    _clean(user.get("Username")),
+                    hash_password(
+                        _clean(user.get("Password"))
+                    ),
+                    _clean(user.get("FullName")),
+                    _clean(user.get("Role")),
+                    "TRUE",
+                ]
+            )
 
-    for user in config.DEFAULT_USERS:
-        rows.append(
-            [
-                _clean(user.get("Username")),
-                hash_password(
-                    _clean(user.get("Password"))
-                ),
-                _clean(user.get("FullName")),
-                _clean(user.get("Role")),
-                "TRUE",
-            ]
+        _append_rows(
+            users_ws,
+            rows,
+            "Default users شامل کرنے",
         )
 
-    _append_rows(
-        users_ws,
-        rows,
-        "Default users شامل کرنے",
-    )
+    st.session_state["_database_initialized"] = True
 
 
 # ==================================================
@@ -402,10 +402,19 @@ def read_all_records(
         records = worksheet.get_all_records()
 
     except Exception as error:
-        st.error(
-            f"⚠️ '{sheet_name}' سے data پڑھنے میں خرابی پیش آئی۔"
-            f"\n\nتفصیل: {error}"
-        )
+        error_text = str(error)
+
+        if "429" in error_text or "quota" in error_text.casefold():
+            st.error(
+                "⚠️ Google Sheets کی عارضی request limit پوری ہو گئی ہے۔ "
+                "ایک منٹ انتظار کریں، پھر صفحہ refresh کریں۔"
+            )
+        else:
+            st.error(
+                f"⚠️ '{sheet_name}' سے data پڑھنے میں خرابی پیش آئی۔"
+                f"\n\nتفصیل: {error}"
+            )
+
         return pd.DataFrame(columns=headers)
 
     return _dataframe_with_headers(
