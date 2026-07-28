@@ -252,6 +252,7 @@ def clear_cache():
     """
     get_client.clear()
     get_spreadsheet.clear()
+    _read_all_records_cached.clear()
     st.session_state.pop("_database_initialized", None)
 
 
@@ -388,11 +389,18 @@ def initialize_database():
 # ==================================================
 # 3) عمومی CRUD فنکشنز
 # ==================================================
-def read_all_records(
+@st.cache_data(ttl=60, show_spinner=False)
+def _read_all_records_cached(
     sheet_name: str,
-    headers: list[str],
+    headers_tuple: tuple[str, ...],
 ) -> pd.DataFrame:
-    """Worksheet کا مکمل data DataFrame میں پڑھیں۔"""
+    """
+    Google Sheet data کو مختصر مدت کے لیے cache کریں۔
+
+    Streamlit کے ہر widget rerun پر دوبارہ Google API read نہ ہونے سے
+    429 quota errors کم ہوتے ہیں۔
+    """
+    headers = list(headers_tuple)
     worksheet = _get_or_create_worksheet(
         sheet_name,
         headers,
@@ -407,7 +415,7 @@ def read_all_records(
         if "429" in error_text or "quota" in error_text.casefold():
             st.error(
                 "⚠️ Google Sheets کی عارضی request limit پوری ہو گئی ہے۔ "
-                "ایک منٹ انتظار کریں، پھر صفحہ refresh کریں۔"
+                "تقریباً ایک منٹ انتظار کریں اور پھر صفحہ refresh کریں۔"
             )
         else:
             st.error(
@@ -417,10 +425,23 @@ def read_all_records(
 
         return pd.DataFrame(columns=headers)
 
-    return _dataframe_with_headers(
-        records,
-        headers,
-    )
+    return _dataframe_with_headers(records, headers)
+
+
+def _clear_records_cache() -> None:
+    """کسی write operation کے بعد cached sheet data صاف کریں۔"""
+    _read_all_records_cached.clear()
+
+
+def read_all_records(
+    sheet_name: str,
+    headers: list[str],
+) -> pd.DataFrame:
+    """Worksheet data cached طریقے سے DataFrame میں پڑھیں۔"""
+    return _read_all_records_cached(
+        sheet_name,
+        tuple(headers),
+    ).copy()
 
 
 def _append_row(
@@ -434,6 +455,7 @@ def _append_row(
             row,
             value_input_option="RAW",
         )
+        _clear_records_cache()
         return True
 
     except Exception as error:
@@ -456,6 +478,7 @@ def _append_rows(
                 rows,
                 value_input_option="RAW",
             )
+            _clear_records_cache()
         return True
 
     except Exception as error:
@@ -480,6 +503,7 @@ def _update_cell(
             column,
             value,
         )
+        _clear_records_cache()
         return True
 
     except Exception as error:
@@ -508,6 +532,7 @@ def _update_row_range(
                 f"A{row}:{last_column}{row}"
             ),
         )
+        _clear_records_cache()
         return True
 
     except Exception as error:
@@ -526,6 +551,7 @@ def _delete_row(
     """Worksheet سے ایک row حذف کریں۔"""
     try:
         worksheet.delete_rows(row)
+        _clear_records_cache()
         return True
 
     except Exception as error:
