@@ -21,6 +21,8 @@
 from __future__ import annotations
 
 import string
+import time
+from threading import RLock
 from pathlib import Path
 from typing import Any
 
@@ -98,51 +100,126 @@ def _dataframe_with_headers(
     return df[ordered_columns]
 
 
-def _worksheet_headers(
+@st.cache_resource(show_spinner=False)
+def _runtime_state() -> dict:
+    """
+    تمام sessions کے درمیان مشترک ہلکی runtime state۔
+
+    - worksheet objects دوبارہ حاصل نہیں کیے جاتے
+    - headers بار بار نہیں پڑھے جاتے
+    - ہر sheet کا الگ data-cache version رکھا جاتا ہے
+    """
+    return {
+        "worksheets": {},
+        "headers": {},
+        "versions": {},
+        "lock": RLock(),
+    }
+
+
+def _is_quota_error(error: Exception) -> bool:
+    """Google API کے 429/quota error کو پہچانیں۔"""
+    message = str(error).casefold()
+    return (
+        "429" in message
+        or "quota exceeded" in message
+        or "rate limit" in message
+        or "resource_exhausted" in message
+    )
+
+
+def _call_with_backoff(
+    operation,
+    action_desc: str,
+    attempts: int = 5,
+):
+    """
+    429 error کی صورت میں Google کی سفارش کے مطابق exponential backoff۔
+
+    درخواستیں فوراً بار بار بھیجنے کے بجائے 2، 4، 8 اور 16 سیکنڈ
+    انتظار کے بعد دوبارہ کوشش کی جاتی ہے۔
+    """
+    last_error = None
+
+    for attempt in range(attempts):
+        try:
+            return operation()
+
+        except Exception as error:
+            last_error = error
+
+            if not _is_quota_error(error) or attempt == attempts - 1:
+                raise
+
+            time.sleep(2 ** (attempt + 1))
+
+    raise last_error
+
+
+def _get_cached_headers(
     worksheet,
     expected_headers: list[str],
 ) -> list[str]:
     """
-    Worksheet کے حقیقی headers واپس کریں اور missing headers آخر میں شامل کریں۔
+    Worksheet headers صرف پہلی ضرورت پر پڑھیں اور memory میں محفوظ رکھیں۔
 
-    اس سے پرانی Google Sheet بھی نئے AttendanceSession یا Remarks کالم کے
-    ساتھ محفوظ طریقے سے کام کرتی ہے اور data غلط column میں نہیں جاتا۔
+    Missing headers صرف ایک بار آخر میں شامل ہوتے ہیں، ہر Streamlit rerun
+    پر نہیں۔
     """
+    state = _runtime_state()
+    sheet_name = worksheet.title
+
+    with state["lock"]:
+        cached = state["headers"].get(sheet_name)
+
+    if cached:
+        return list(cached)
+
     try:
-        values = worksheet.get_all_values()
-        actual_headers = (
-            [_clean(value) for value in values[0]]
-            if values
-            else []
+        actual_headers = _call_with_backoff(
+            lambda: [
+                _clean(value)
+                for value in worksheet.row_values(1)
+            ],
+            f"'{sheet_name}' کے headers پڑھنے",
         )
 
         if not actual_headers:
-            worksheet.append_row(
-                expected_headers,
-                value_input_option="RAW",
+            actual_headers = list(expected_headers)
+            _call_with_backoff(
+                lambda: worksheet.append_row(
+                    actual_headers,
+                    value_input_option="RAW",
+                ),
+                f"'{sheet_name}' کے headers بنانے",
             )
-            return list(expected_headers)
+        else:
+            missing_headers = [
+                header
+                for header in expected_headers
+                if header not in actual_headers
+            ]
 
-        missing_headers = [
-            header
-            for header in expected_headers
-            if header not in actual_headers
-        ]
+            if missing_headers:
+                actual_headers = actual_headers + missing_headers
+                last_column = _column_letter(len(actual_headers))
 
-        if missing_headers:
-            updated_headers = actual_headers + missing_headers
-            last_column = _column_letter(len(updated_headers))
-            worksheet.update(
-                values=[updated_headers],
-                range_name=f"A1:{last_column}1",
-            )
-            actual_headers = updated_headers
+                _call_with_backoff(
+                    lambda: worksheet.update(
+                        values=[actual_headers],
+                        range_name=f"A1:{last_column}1",
+                    ),
+                    f"'{sheet_name}' کے headers update کرنے",
+                )
 
-        return actual_headers
+        with state["lock"]:
+            state["headers"][sheet_name] = list(actual_headers)
+
+        return list(actual_headers)
 
     except Exception as error:
         st.error(
-            "⚠️ Worksheet headers update کرنے میں خرابی پیش آئی۔"
+            f"⚠️ '{sheet_name}' کے headers تیار نہیں ہو سکے۔"
             f"\n\nتفصیل: {error}"
         )
         return list(expected_headers)
@@ -157,6 +234,29 @@ def _row_for_actual_headers(
         _clean(record.get(header, ""))
         for header in actual_headers
     ]
+
+
+def _sheet_version(sheet_name: str) -> int:
+    """منتخب sheet کا موجودہ cache version واپس کریں۔"""
+    state = _runtime_state()
+
+    with state["lock"]:
+        return int(state["versions"].get(sheet_name, 0))
+
+
+def _invalidate_sheet_cache(sheet_name: str) -> None:
+    """
+    صرف تبدیل ہونے والی sheet کا cache invalid کریں۔
+
+    پوری application کا cache صاف نہیں کیا جاتا، اس لیے ایک write کے بعد
+    Users, Logs, Settings اور دوسری sheets دوبارہ read نہیں ہوتیں۔
+    """
+    state = _runtime_state()
+
+    with state["lock"]:
+        state["versions"][sheet_name] = (
+            int(state["versions"].get(sheet_name, 0)) + 1
+        )
 
 
 # ==================================================
@@ -247,13 +347,17 @@ def get_spreadsheet():
 
 def clear_cache():
     """
-    Cached Google connection اور initialization حالت صاف کریں۔
-    Backup، restore یا manual refresh کے بعد استعمال کریں۔
+    تمام cached connections اور data دستی طور پر صاف کریں۔
+
+    اسے صرف backup/restore یا واقعی manual refresh کے وقت استعمال کریں۔
+    عام add/update/delete operations صرف متعلقہ sheet کا cache invalid
+    کرتی ہیں۔
     """
     get_client.clear()
     get_spreadsheet.clear()
     _read_all_records_cached.clear()
-    st.session_state.pop("_database_initialized", None)
+    _initialize_database_once.clear()
+    _runtime_state.clear()
 
 
 # ==================================================
@@ -264,28 +368,38 @@ def _get_or_create_worksheet(
     headers: list[str],
 ):
     """
-    Worksheet حاصل کریں۔
-    موجود نہ ہونے پر نئی Worksheet اور headers بنائیں۔
+    Worksheet object process-wide cache سے حاصل کریں۔
+
+    اہم فرق:
+    یہ function ہر call پر get_all_values() نہیں چلاتا۔ یہی پرانے code
+    میں quota بڑھنے کی بڑی وجہ تھی۔
     """
+    state = _runtime_state()
+
+    with state["lock"]:
+        cached = state["worksheets"].get(sheet_name)
+
+    if cached is not None:
+        return cached
+
     spreadsheet = get_spreadsheet()
 
     try:
-        worksheet = spreadsheet.worksheet(
-            sheet_name
+        worksheet = _call_with_backoff(
+            lambda: spreadsheet.worksheet(sheet_name),
+            f"'{sheet_name}' Worksheet حاصل کرنے",
         )
 
     except gspread.WorksheetNotFound:
         try:
-            worksheet = spreadsheet.add_worksheet(
-                title=sheet_name,
-                rows=1000,
-                cols=max(len(headers), 5),
+            worksheet = _call_with_backoff(
+                lambda: spreadsheet.add_worksheet(
+                    title=sheet_name,
+                    rows=1000,
+                    cols=max(len(headers), 5),
+                ),
+                f"'{sheet_name}' Worksheet بنانے",
             )
-            worksheet.append_row(
-                headers,
-                value_input_option="RAW",
-            )
-            return worksheet
 
         except Exception as error:
             st.error(
@@ -301,35 +415,20 @@ def _get_or_create_worksheet(
         )
         st.stop()
 
-    try:
-        existing_values = worksheet.get_all_values()
-
-        if not existing_values:
-            worksheet.append_row(
-                headers,
-                value_input_option="RAW",
-            )
-
-    except Exception as error:
-        st.error(
-            f"⚠️ '{sheet_name}' Worksheet پڑھنے میں خرابی پیش آئی۔"
-            f"\n\nتفصیل: {error}"
-        )
-        st.stop()
+    with state["lock"]:
+        state["worksheets"][sheet_name] = worksheet
 
     return worksheet
 
 
-def initialize_database():
+@st.cache_resource(show_spinner=False)
+def _initialize_database_once() -> bool:
     """
-    تمام مطلوبہ Worksheets بنائیں۔
+    Database structure پوری deployed process میں صرف ایک بار چیک کریں۔
 
-    Google Sheets API کی 429 limit سے بچنے کے لیے یہ initialization
-    ایک Streamlit session میں صرف ایک بار چلتی ہے۔
+    ہر user session اور ہر Streamlit rerun پر چھ worksheets دوبارہ read
+    نہیں کی جاتیں۔
     """
-    if st.session_state.get("_database_initialized"):
-        return
-
     worksheet_specs = [
         (config.SHEET_USERS, config.USERS_HEADERS),
         (config.SHEET_STUDENTS, config.STUDENTS_HEADERS),
@@ -346,13 +445,16 @@ def initialize_database():
             sheet_name,
             headers,
         )
-        _worksheet_headers(worksheet, headers)
+        _get_cached_headers(worksheet, headers)
         worksheets[sheet_name] = worksheet
 
     users_ws = worksheets[config.SHEET_USERS]
 
     try:
-        records = users_ws.get_all_records()
+        users_records = _call_with_backoff(
+            users_ws.get_all_records,
+            "Users Worksheet پڑھنے",
+        )
 
     except Exception as error:
         st.error(
@@ -361,7 +463,7 @@ def initialize_database():
         )
         st.stop()
 
-    if not records:
+    if not users_records:
         rows = []
 
         for user in config.DEFAULT_USERS:
@@ -377,29 +479,52 @@ def initialize_database():
                 ]
             )
 
-        _append_rows(
-            users_ws,
-            rows,
-            "Default users شامل کرنے",
-        )
+        try:
+            _call_with_backoff(
+                lambda: users_ws.append_rows(
+                    rows,
+                    value_input_option="RAW",
+                ),
+                "Default users شامل کرنے",
+            )
+            _invalidate_sheet_cache(config.SHEET_USERS)
 
-    st.session_state["_database_initialized"] = True
+        except Exception as error:
+            st.error(
+                "⚠️ Default users شامل نہیں ہو سکے۔"
+                f"\n\nتفصیل: {error}"
+            )
+            st.stop()
+
+    return True
+
+
+def initialize_database():
+    """Database initialization کو process-wide cached helper سے چلائیں۔"""
+    _initialize_database_once()
 
 
 # ==================================================
 # 3) عمومی CRUD فنکشنز
 # ==================================================
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(
+    ttl=600,
+    max_entries=128,
+    show_spinner=False,
+)
 def _read_all_records_cached(
     sheet_name: str,
     headers_tuple: tuple[str, ...],
+    version: int,
 ) -> pd.DataFrame:
     """
-    Google Sheet data کو مختصر مدت کے لیے cache کریں۔
+    ایک sheet کو زیادہ سے زیادہ ہر 10 منٹ بعد دوبارہ read کریں۔
 
-    Streamlit کے ہر widget rerun پر دوبارہ Google API read نہ ہونے سے
-    429 quota errors کم ہوتے ہیں۔
+    Write کے فوراً بعد صرف اسی sheet کا version بدلتا ہے، جس سے fresh data
+    مل جاتا ہے اور باقی worksheets cache میں رہتی ہیں۔
     """
+    del version  # cache key کے لیے استعمال ہوتا ہے
+
     headers = list(headers_tuple)
     worksheet = _get_or_create_worksheet(
         sheet_name,
@@ -407,15 +532,18 @@ def _read_all_records_cached(
     )
 
     try:
-        records = worksheet.get_all_records()
+        records = _call_with_backoff(
+            worksheet.get_all_records,
+            f"'{sheet_name}' سے data پڑھنے",
+        )
 
     except Exception as error:
-        error_text = str(error)
-
-        if "429" in error_text or "quota" in error_text.casefold():
+        if _is_quota_error(error):
             st.error(
-                "⚠️ Google Sheets کی عارضی request limit پوری ہو گئی ہے۔ "
-                "تقریباً ایک منٹ انتظار کریں اور پھر صفحہ refresh کریں۔"
+                "⚠️ Google Sheets کی request limit عارضی طور پر پوری ہے۔ "
+                "Application نے خودکار طور پر کئی بار انتظار کے ساتھ کوشش "
+                "کی، مگر Google نے ابھی اجازت نہیں دی۔ کچھ دیر بعد دوبارہ "
+                "کوشش کریں۔"
             )
         else:
             st.error(
@@ -428,21 +556,16 @@ def _read_all_records_cached(
     return _dataframe_with_headers(records, headers)
 
 
-def _clear_records_cache() -> None:
-    """کسی write operation کے بعد cached sheet data صاف کریں۔"""
-    _read_all_records_cached.clear()
-
-
 def read_all_records(
     sheet_name: str,
     headers: list[str],
 ) -> pd.DataFrame:
-    """Worksheet data cached طریقے سے DataFrame میں پڑھیں۔"""
+    """Worksheet data کو sheet-specific versioned cache سے پڑھیں۔"""
     return _read_all_records_cached(
         sheet_name,
         tuple(headers),
+        _sheet_version(sheet_name),
     ).copy()
-
 
 def _append_row(
     worksheet,
@@ -451,11 +574,14 @@ def _append_row(
 ) -> bool:
     """Worksheet میں ایک نئی row شامل کریں۔"""
     try:
-        worksheet.append_row(
-            row,
-            value_input_option="RAW",
+        _call_with_backoff(
+            lambda: worksheet.append_row(
+                row,
+                value_input_option="RAW",
+            ),
+            action_desc,
         )
-        _clear_records_cache()
+        _invalidate_sheet_cache(worksheet.title)
         return True
 
     except Exception as error:
@@ -464,21 +590,24 @@ def _append_row(
             f"\n\nتفصیل: {error}"
         )
         return False
-
 
 def _append_rows(
     worksheet,
     rows: list[list],
     action_desc: str = "Data شامل کرنے",
 ) -> bool:
-    """Worksheet میں کئی rows ایک ساتھ شامل کریں۔"""
+    """Worksheet میں کئی rows ایک batch request میں شامل کریں۔"""
     try:
         if rows:
-            worksheet.append_rows(
-                rows,
-                value_input_option="RAW",
+            _call_with_backoff(
+                lambda: worksheet.append_rows(
+                    rows,
+                    value_input_option="RAW",
+                ),
+                action_desc,
             )
-            _clear_records_cache()
+            _invalidate_sheet_cache(worksheet.title)
+
         return True
 
     except Exception as error:
@@ -487,7 +616,6 @@ def _append_rows(
             f"\n\nتفصیل: {error}"
         )
         return False
-
 
 def _update_cell(
     worksheet,
@@ -498,12 +626,15 @@ def _update_cell(
 ) -> bool:
     """Worksheet کے ایک cell کو update کریں۔"""
     try:
-        worksheet.update_cell(
-            row,
-            column,
-            value,
+        _call_with_backoff(
+            lambda: worksheet.update_cell(
+                row,
+                column,
+                value,
+            ),
+            action_desc,
         )
-        _clear_records_cache()
+        _invalidate_sheet_cache(worksheet.title)
         return True
 
     except Exception as error:
@@ -512,7 +643,6 @@ def _update_cell(
             f"\n\nتفصیل: {error}"
         )
         return False
-
 
 def _update_row_range(
     worksheet,
@@ -520,19 +650,18 @@ def _update_row_range(
     values: list,
     action_desc: str = "Data update کرنے",
 ) -> bool:
-    """Worksheet کی مکمل row کو ایک request میں update کریں۔"""
+    """Worksheet کی مکمل row کو ایک batch request میں update کریں۔"""
     try:
-        last_column = _column_letter(
-            len(values)
-        )
+        last_column = _column_letter(len(values))
 
-        worksheet.update(
-            values=[values],
-            range_name=(
-                f"A{row}:{last_column}{row}"
+        _call_with_backoff(
+            lambda: worksheet.update(
+                values=[values],
+                range_name=f"A{row}:{last_column}{row}",
             ),
+            action_desc,
         )
-        _clear_records_cache()
+        _invalidate_sheet_cache(worksheet.title)
         return True
 
     except Exception as error:
@@ -541,7 +670,6 @@ def _update_row_range(
             f"\n\nتفصیل: {error}"
         )
         return False
-
 
 def _delete_row(
     worksheet,
@@ -550,8 +678,11 @@ def _delete_row(
 ) -> bool:
     """Worksheet سے ایک row حذف کریں۔"""
     try:
-        worksheet.delete_rows(row)
-        _clear_records_cache()
+        _call_with_backoff(
+            lambda: worksheet.delete_rows(row),
+            action_desc,
+        )
+        _invalidate_sheet_cache(worksheet.title)
         return True
 
     except Exception as error:
@@ -560,7 +691,6 @@ def _delete_row(
             f"\n\nتفصیل: {error}"
         )
         return False
-
 
 def worksheet_to_df(
     sheet_name: str,
@@ -629,34 +759,22 @@ def add_user(
 
 
 def _find_user_row(username: str):
-    """Username کے exact match سے Google Sheet row تلاش کریں۔"""
+    """Cached Users DataFrame سے row number تلاش کریں۔"""
     worksheet = _get_or_create_worksheet(
         config.SHEET_USERS,
         config.USERS_HEADERS,
     )
-
-    try:
-        records = worksheet.get_all_records()
-
-    except Exception as error:
-        st.error(
-            "⚠️ صارف تلاش کرنے میں خرابی پیش آئی۔"
-            f"\n\nتفصیل: {error}"
-        )
-        return worksheet, None
-
+    df = get_all_users()
     target = _normalise(username)
 
-    for dataframe_index, record in enumerate(
-        records
-    ):
-        if _normalise(
-            record.get("Username")
-        ) == target:
+    if df.empty or "Username" not in df.columns:
+        return worksheet, None
+
+    for dataframe_index, record in df.reset_index(drop=True).iterrows():
+        if _normalise(record.get("Username")) == target:
             return worksheet, dataframe_index + 2
 
     return worksheet, None
-
 
 def update_user_password(
     username: str,
@@ -856,64 +974,26 @@ def _find_student_row(
     father_name: str,
     assigned_teacher: str,
 ):
-    """
-    StudentName + FatherName + AssignedTeacher کے exact match سے row تلاش کریں۔
-    """
+    """Cached Students DataFrame سے exact row number تلاش کریں۔"""
     worksheet = _get_or_create_worksheet(
         config.SHEET_STUDENTS,
         config.STUDENTS_HEADERS,
     )
-
-    try:
-        records = worksheet.get_all_records()
-
-    except Exception as error:
-        st.error(
-            "⚠️ طالب علم تلاش کرنے میں خرابی پیش آئی۔"
-            f"\n\nتفصیل: {error}"
-        )
-        return worksheet, None
+    df = get_all_students()
 
     target_name = _normalise(student_name)
     target_father = _normalise(father_name)
-    target_teacher = _normalise(
-        assigned_teacher
-    )
+    target_teacher = _normalise(assigned_teacher)
 
-    for dataframe_index, record in enumerate(
-        records
-    ):
-        same_name = (
-            _normalise(
-                record.get("StudentName")
-            )
-            == target_name
-        )
-        same_father = (
-            _normalise(
-                record.get("FatherName")
-            )
-            == target_father
-        )
-        same_teacher = (
-            _normalise(
-                record.get("AssignedTeacher")
-            )
-            == target_teacher
-        )
-
+    for dataframe_index, record in df.reset_index(drop=True).iterrows():
         if (
-            same_name
-            and same_father
-            and same_teacher
+            _normalise(record.get("StudentName")) == target_name
+            and _normalise(record.get("FatherName")) == target_father
+            and _normalise(record.get("AssignedTeacher")) == target_teacher
         ):
-            return (
-                worksheet,
-                dataframe_index + 2,
-            )
+            return worksheet, dataframe_index + 2
 
     return worksheet, None
-
 
 def update_student(
     original_name,
@@ -1191,7 +1271,7 @@ def submit_attendance(
         config.SHEET_ATTENDANCE,
         config.ATTENDANCE_HEADERS,
     )
-    actual_headers = _worksheet_headers(
+    actual_headers = _get_cached_headers(
         worksheet,
         config.ATTENDANCE_HEADERS,
     )
@@ -1227,22 +1307,14 @@ def _find_attendance_row(
     teacher_username: str,
     attendance_session: str | None = None,
 ):
-    """Date + student + teacher + اختیاری session سے row تلاش کریں۔"""
+    """Cached Attendance DataFrame سے record row تلاش کریں۔"""
     worksheet = _get_or_create_worksheet(
         config.SHEET_ATTENDANCE,
         config.ATTENDANCE_HEADERS,
     )
+    df = get_all_attendance()
 
-    try:
-        records = worksheet.get_all_records()
-    except Exception as error:
-        st.error(
-            "⚠️ حاضری کا record تلاش کرنے میں خرابی پیش آئی۔"
-            f"\n\nتفصیل: {error}"
-        )
-        return worksheet, None
-
-    for dataframe_index, record in enumerate(records):
+    for dataframe_index, record in df.reset_index(drop=True).iterrows():
         matched = (
             _normalise(record.get("Date")) == _normalise(date)
             and _normalise(record.get("StudentName"))
@@ -1253,11 +1325,7 @@ def _find_attendance_row(
             == _normalise(teacher_username)
         )
 
-        if (
-            matched
-            and attendance_session is not None
-            and "AttendanceSession" in record
-        ):
+        if matched and attendance_session is not None:
             matched = (
                 _normalise(record.get("AttendanceSession"))
                 == _normalise(attendance_session)
@@ -1267,7 +1335,6 @@ def _find_attendance_row(
             return worksheet, dataframe_index + 2
 
     return worksheet, None
-
 
 def update_attendance_record(
     date: str,
@@ -1289,7 +1356,7 @@ def update_attendance_record(
         st.error("⚠️ حاضری کا record نہیں ملا۔")
         return False
 
-    actual_headers = _worksheet_headers(
+    actual_headers = _get_cached_headers(
         worksheet,
         config.ATTENDANCE_HEADERS,
     )
@@ -1433,7 +1500,7 @@ def submit_daily_work(
         config.SHEET_DAILY_WORK,
         config.DAILY_WORK_HEADERS,
     )
-    actual_headers = _worksheet_headers(
+    actual_headers = _get_cached_headers(
         worksheet,
         config.DAILY_WORK_HEADERS,
     )
@@ -1476,22 +1543,14 @@ def _find_daily_work_row(
     father_name: str,
     teacher_username: str,
 ):
-    """Date + student + teacher سے تعلیمی work row تلاش کریں۔"""
+    """Cached DailyWork DataFrame سے record row تلاش کریں۔"""
     worksheet = _get_or_create_worksheet(
         config.SHEET_DAILY_WORK,
         config.DAILY_WORK_HEADERS,
     )
+    df = get_all_daily_work()
 
-    try:
-        records = worksheet.get_all_records()
-    except Exception as error:
-        st.error(
-            "⚠️ تعلیمی record تلاش کرنے میں خرابی پیش آئی۔"
-            f"\n\nتفصیل: {error}"
-        )
-        return worksheet, None
-
-    for dataframe_index, record in enumerate(records):
+    for dataframe_index, record in df.reset_index(drop=True).iterrows():
         if (
             _normalise(record.get("Date")) == _normalise(date)
             and _normalise(record.get("StudentName"))
@@ -1504,7 +1563,6 @@ def _find_daily_work_row(
             return worksheet, dataframe_index + 2
 
     return worksheet, None
-
 
 def update_daily_work_record(
     date: str,
@@ -1537,7 +1595,7 @@ def update_daily_work_record(
         st.error("⚠️ تعلیمی record نہیں ملا۔")
         return False
 
-    actual_headers = _worksheet_headers(
+    actual_headers = _get_cached_headers(
         worksheet,
         config.DAILY_WORK_HEADERS,
     )
@@ -1669,24 +1727,16 @@ def set_setting(
         config.SETTINGS_HEADERS,
     )
 
-    try:
-        records = worksheet.get_all_records()
-
-    except Exception as error:
-        st.error(
-            "⚠️ Settings تلاش کرنے میں خرابی پیش آئی۔"
-            f"\n\nتفصیل: {error}"
-        )
-        return False
-
+    settings_df = read_all_records(
+        config.SHEET_SETTINGS,
+        config.SETTINGS_HEADERS,
+    )
     target_key = _normalise(key)
 
-    for dataframe_index, record in enumerate(
-        records
+    for dataframe_index, record in (
+        settings_df.reset_index(drop=True).iterrows()
     ):
-        if _normalise(
-            record.get("Key")
-        ) == target_key:
+        if _normalise(record.get("Key")) == target_key:
             return _update_cell(
                 worksheet,
                 dataframe_index + 2,
