@@ -5,7 +5,7 @@
 یہ ماڈیول منتظم کے لیے درج ذیل سہولیات فراہم کرتا ہے:
     - یومیہ، ہفتہ وار، ماہانہ اور مخصوص تاریخی رینج کی حاضری رپورٹس
     - صبح اور دوپہر کی حاضری کی الگ فلٹرنگ اور شماریات
-    - روزانہ تعلیمی کام کی رپورٹ: سبق، سبقی، منزل اور پاؤ
+    - روزانہ تعلیمی کام کی رپورٹ: سبق، سبقی، منزل، پاؤ اور کیفیت
     - ماہانہ غیر درج شدہ اندراجات کی رپورٹ
     - تعلیمی ایام کی گنتی، جمعہ کو خارج کرتے ہوئے
     - مہینے کے شروع اور آخر کا سبق اور ماہانہ سبق کی پیش رفت
@@ -23,12 +23,6 @@ from __future__ import annotations
 
 import io
 import os
-import arabic_reshaper
-
-from bidi.algorithm import get_display
-
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
@@ -89,11 +83,18 @@ def _find_urdu_font_path() -> str | None:
     کمپیوٹر پر موجود ایسا TrueType فونٹ تلاش کریں جو اردو حروف دکھا سکے۔
     Windows میں Nirmala UI عام طور پر موجود ہوتا ہے۔
     """
+    project_font = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "assets",
+        "fonts",
+        "NotoNaskhArabic-Regular.ttf",
+    )
+
     candidates = [
         os.environ.get("URDU_PDF_FONT_PATH", ""),
+        project_font,
         r"C:\Windows\Fonts\Nirmala.ttf",
         r"C:\Windows\Fonts\NirmalaB.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
         "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
         "/usr/share/fonts/opentype/noto/NotoNaskhArabic-Regular.ttf",
@@ -298,6 +299,7 @@ DAILY_WORK_COLUMN_LABELS = {
     "ManzilHalf": "منزل کا نصف",
     "PaoJuz": "پاؤ کا پارہ",
     "PaoQuarter": "پاؤ نمبر",
+    "Remarks": "کیفیت",
     "TimeSubmitted": "جمع کروانے کا وقت",
 }
 
@@ -827,6 +829,129 @@ def _student_summary_progress_excel_bytes(
     return output.getvalue()
 
 
+def _student_remarks_display(
+    work: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    صرف تاریخ اور کیفیت/تبصرہ کی رپورٹ تیار کریں۔
+
+    سبق، سبقی، منزل اور پاؤ کے کالم اس report میں شامل نہیں کیے جاتے۔
+    """
+    prepared = work.copy()
+
+    for column in ["Date", "Remarks"]:
+        if column not in prepared.columns:
+            prepared[column] = ""
+
+    remarks = prepared[["Date", "Remarks"]].copy()
+    remarks["Date"] = remarks["Date"].fillna("").astype(str).str.strip()
+    remarks["Remarks"] = (
+        remarks["Remarks"].fillna("").astype(str).str.strip()
+    )
+
+    # صرف وہ rows دکھائیں جن میں واقعی کیفیت لکھی گئی ہو۔
+    remarks = remarks[remarks["Remarks"] != ""].copy()
+
+    return remarks.rename(
+        columns={
+            "Date": "تاریخ",
+            "Remarks": "کیفیت",
+        }
+    )
+
+
+def _student_summary_progress_remarks_excel_bytes(
+    overview: pd.DataFrame,
+    progress: pd.DataFrame,
+    work: pd.DataFrame,
+) -> bytes:
+    """
+    مکمل خلاصہ، سبق کی پیش رفت اور کیفیت کی الگ Excel رپورٹ بنائیں۔
+
+    روزانہ تعلیمی کام کے سبق، سبقی، منزل اور پاؤ والے columns شامل نہیں ہوتے۔
+    """
+    output = io.BytesIO()
+    remarks = _student_remarks_display(work)
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        overview.to_excel(
+            writer,
+            index=False,
+            sheet_name="مکمل خلاصہ",
+        )
+        progress.to_excel(
+            writer,
+            index=False,
+            sheet_name="سبق کی پیش رفت",
+        )
+        remarks.to_excel(
+            writer,
+            index=False,
+            sheet_name="کیفیت",
+        )
+
+    return output.getvalue()
+
+
+def _student_summary_progress_remarks_pdf_bytes(
+    student_name: str,
+    father_name: str,
+    teacher_name: str,
+    month: str,
+    overview: pd.DataFrame,
+    progress: pd.DataFrame,
+    work: pd.DataFrame,
+) -> bytes:
+    """
+    مکمل خلاصہ، سبق کی پیش رفت اور کیفیت کی الگ Urdu PDF رپورٹ بنائیں۔
+
+    روزانہ تعلیمی کام کے دوسرے fields اس PDF میں شامل نہیں ہوتے۔
+    """
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+        leftMargin=10 * mm,
+        rightMargin=10 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    page_width = landscape(A4)[0] - (20 * mm)
+    remarks = _student_remarks_display(work)
+
+    elements = [
+        _pdf_paragraph(
+            "مکمل خلاصہ، سبق کی پیش رفت اور کیفیت",
+            styles["Title"],
+        ),
+        _pdf_paragraph(
+            (
+                f"طالب علم: {student_name} | والد: {father_name} | "
+                f"استاد: {teacher_name} | مہینہ: {month}"
+            ),
+            styles["Normal"],
+        ),
+        Spacer(1, 10),
+        _pdf_paragraph("مکمل خلاصہ", styles["Heading2"]),
+        Spacer(1, 4),
+        _pdf_table(overview, page_width),
+        Spacer(1, 12),
+        _pdf_paragraph("سبق کی پیش رفت", styles["Heading2"]),
+        Spacer(1, 4),
+        _pdf_table(progress, page_width),
+        Spacer(1, 12),
+        _pdf_paragraph("کیفیت", styles["Heading2"]),
+        Spacer(1, 4),
+        _pdf_table(remarks, page_width),
+    ]
+
+    document.build(elements)
+    return buffer.getvalue()
+
+
+
 def _student_combined_excel_bytes(
     overview: pd.DataFrame,
     attendance: pd.DataFrame,
@@ -1344,6 +1469,66 @@ def render_student_monthly_report(
             mime="application/pdf",
             use_container_width=True,
             key=f"summary_progress_pdf_{safe_name}_{month}",
+        )
+
+
+    st.markdown("---")
+    st.markdown(
+        "### 📥 مکمل خلاصہ، سبق کی پیش رفت اور کیفیت الگ ڈاؤن لوڈ کریں"
+    )
+    st.caption(
+        "اس الگ رپورٹ میں صرف مکمل خلاصہ، سبق کی پیش رفت اور کیفیت شامل ہیں۔ "
+        "سبق، سبقی، منزل، پاؤ اور روزانہ تعلیمی کام کی تفصیل شامل نہیں ہوگی۔"
+    )
+
+    summary_progress_remarks_prefix = (
+        f"summary_progress_remarks_{safe_name}_{month}"
+    )
+    remarks_col1, remarks_col2 = st.columns(2)
+
+    with remarks_col1:
+        st.download_button(
+            "⬇️ خلاصہ، سبق کی پیش رفت اور کیفیت Excel",
+            data=_student_summary_progress_remarks_excel_bytes(
+                overview,
+                progress,
+                work,
+            ),
+            file_name=(
+                f"{summary_progress_remarks_prefix}.xlsx"
+            ),
+            mime=(
+                "application/vnd.openxmlformats-"
+                "officedocument.spreadsheetml.sheet"
+            ),
+            use_container_width=True,
+            key=(
+                f"summary_progress_remarks_excel_"
+                f"{safe_name}_{month}"
+            ),
+        )
+
+    with remarks_col2:
+        st.download_button(
+            "⬇️ خلاصہ، سبق کی پیش رفت اور کیفیت PDF",
+            data=_student_summary_progress_remarks_pdf_bytes(
+                student_name,
+                father_name,
+                teacher_name,
+                month,
+                overview,
+                progress,
+                work,
+            ),
+            file_name=(
+                f"{summary_progress_remarks_prefix}.pdf"
+            ),
+            mime="application/pdf",
+            use_container_width=True,
+            key=(
+                f"summary_progress_remarks_pdf_"
+                f"{safe_name}_{month}"
+            ),
         )
 
 

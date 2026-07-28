@@ -90,6 +90,7 @@ DAILY_WORK_HEADERS = [
     "ManzilHalf",
     "PaoJuz",
     "PaoQuarter",
+    "Remarks",
     "TimeSubmitted",
 ]
 
@@ -163,14 +164,15 @@ WORK_SABAQ = "سبق"
 WORK_SABQI = "سبقی"
 WORK_MANZIL = "منزل"
 WORK_PAO = "پاؤ"
+WORK_REMARKS = "کیفیت"
 
 DAILY_WORK_TYPES = [
     WORK_SABAQ,
     WORK_SABQI,
     WORK_MANZIL,
     WORK_PAO,
+    WORK_REMARKS,
 ]
-
 JUZ_NUMBERS = list(range(1, 31))
 
 MANZIL_AMOUNT_FULL = "مکمل"

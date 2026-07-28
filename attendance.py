@@ -435,7 +435,7 @@ def render_daily_work_form(
         "جو کام نہیں ہوا اس کے خانے خالی چھوڑ دیں۔"
     )
 
-    s1, s2, s3, s4 = st.tabs(["سبق", "سبقی", "منزل", "پاؤ"])
+    s1, s2, s3, s4, s5 = st.tabs(["سبق", "سبقی", "منزل", "پاؤ", "کیفیت"])
 
     with s1:
         c1, c2 = st.columns(2)
@@ -502,6 +502,17 @@ def render_daily_work_form(
             key=f"{widget_prefix}_pq",
         )
 
+    with s5:
+        remarks = st.text_area(
+            "کیفیت / تبصرہ",
+            placeholder=(
+                "طالب علم کی کارکردگی، توجہ، سبق کی تیاری یا "
+                "ضروری ہدایت اردو میں درج کریں۔"
+            ),
+            key=f"{widget_prefix}_remarks",
+            height=120,
+        )
+
     submitted = st.button(
         "💾 اس طالب علم کا تعلیمی کام محفوظ کریں",
         key=f"{widget_prefix}_save",
@@ -524,6 +535,7 @@ def render_daily_work_form(
         "ManzilHalf": manzil_half,
         "PaoJuz": pao_juz,
         "PaoQuarter": pao_quarter,
+        "Remarks": remarks,
     }
 
     with st.spinner("تعلیمی کام محفوظ کیا جا رہا ہے..."):
@@ -1164,6 +1176,13 @@ def _render_daily_work_editor(
         key=f"{unique_prefix}_pao_quarter",
     )
 
+    remarks = st.text_area(
+        "کیفیت / تبصرہ",
+        value=_clean(row.get("Remarks")),
+        key=f"{unique_prefix}_remarks",
+        height=120,
+    )
+
     save = st.button(
         "💾 تبدیلیاں محفوظ کریں",
         key=f"{unique_prefix}_save",
@@ -1187,6 +1206,7 @@ def _render_daily_work_editor(
             manzil_half=manzil_half,
             pao_juz=pao_juz,
             pao_quarter=pao_quarter,
+            remarks=remarks,
         )
 
         if success:
