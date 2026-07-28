@@ -27,6 +27,7 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Iterable
+from xml.sax.saxutils import escape
 
 import pandas as pd
 import plotly.express as px
@@ -78,52 +79,115 @@ TEACHER_URDU_FALLBACK = {
 }
 
 
-def _find_urdu_font_path() -> str | None:
+def _urdu_font_candidates() -> list[str]:
     """
-    کمپیوٹر پر موجود ایسا TrueType فونٹ تلاش کریں جو اردو حروف دکھا سکے۔
-    Windows میں Nirmala UI عام طور پر موجود ہوتا ہے۔
-    """
-    project_font = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "assets",
-        "fonts",
-        "NotoNaskhArabic-Regular.ttf",
-    )
+    Urdu PDF کے لیے ممکنہ font paths ترجیحی ترتیب میں واپس کریں۔
 
-    candidates = [
+    Project کے اندر موجود Noto Nastaliq/Naskh font پہلے استعمال ہوگا،
+    پھر Windows/Linux کے معروف Urdu-capable fonts آزمائے جائیں گے۔
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    return [
         os.environ.get("URDU_PDF_FONT_PATH", ""),
-        project_font,
+        os.path.join(
+            base_dir,
+            "assets",
+            "fonts",
+            "NotoNaskhArabic-Regular.ttf",
+        ),
+        os.path.join(
+            base_dir,
+            "assets",
+            "fonts",
+            "NotoNastaliqUrdu-Regular.ttf",
+        ),
         r"C:\Windows\Fonts\Nirmala.ttf",
         r"C:\Windows\Fonts\NirmalaB.ttf",
+        r"C:\Windows\Fonts\NirmalaS.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\tahoma.ttf",
+        r"C:\Windows\Fonts\segoeui.ttf",
         "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNastaliqUrdu-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
         "/usr/share/fonts/opentype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoNastaliqUrdu-Regular.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
 
-    for candidate in candidates:
-        if candidate and os.path.exists(candidate):
+
+def _find_urdu_font_path() -> str | None:
+    """پہلا موجود Urdu-capable font path واپس کریں۔"""
+    for candidate in _urdu_font_candidates():
+        if candidate and os.path.isfile(candidate):
             return candidate
 
     return None
 
 
 def _register_urdu_pdf_font() -> str:
-    """اردو PDF فونٹ register کریں اور اس کا ReportLab نام واپس کریں۔"""
+    """
+    دستیاب fonts کو ایک ایک کرکے آزمائیں اور پہلا کامیاب font register کریں۔
+
+    اہم اصلاح:
+    پہلے code میں اگر project font موجود مگر خراب/unsupported ہوتا تو code
+    فوراً Helvetica پر چلا جاتا تھا۔ Helvetica اردو glyphs نہیں دکھاتا،
+    اسی لیے PDF میں صرف نقطے اور علامات نظر آ رہی تھیں۔
+    """
     if PDF_URDU_FONT_NAME in pdfmetrics.getRegisteredFontNames():
         return PDF_URDU_FONT_NAME
 
-    font_path = _find_urdu_font_path()
-    if not font_path:
-        return "Helvetica"
+    attempted_paths = []
 
-    try:
-        pdfmetrics.registerFont(
-            TTFont(PDF_URDU_FONT_NAME, font_path)
+    for font_path in _urdu_font_candidates():
+        if not font_path or not os.path.isfile(font_path):
+            continue
+
+        attempted_paths.append(font_path)
+
+        try:
+            pdfmetrics.registerFont(
+                TTFont(PDF_URDU_FONT_NAME, font_path)
+            )
+            return PDF_URDU_FONT_NAME
+        except Exception:
+            # اگلا موجود font آزمائیں؛ خاموشی سے Helvetica استعمال نہ کریں۔
+            continue
+
+    expected_project_font = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "assets",
+        "fonts",
+        "NotoNaskhArabic-Regular.ttf",
+    )
+
+    raise RuntimeError(
+        "Urdu PDF font register نہیں ہو سکا۔ "
+        "براہ کرم یہ font file درست جگہ رکھیں: "
+        f"{expected_project_font}. "
+        "آزمائے گئے fonts: "
+        + (", ".join(attempted_paths) if attempted_paths else "کوئی نہیں")
+    )
+
+
+def _validate_urdu_pdf_support() -> None:
+    """PDF بنانے سے پہلے Urdu packages اور font کی موجودگی چیک کریں۔"""
+    missing_packages = []
+
+    if arabic_reshaper is None:
+        missing_packages.append("arabic-reshaper")
+
+    if get_display is None:
+        missing_packages.append("python-bidi")
+
+    if missing_packages:
+        raise RuntimeError(
+            "Urdu PDF کے لیے یہ packages install کریں: "
+            + ", ".join(missing_packages)
         )
-        return PDF_URDU_FONT_NAME
-    except Exception:
-        return "Helvetica"
+
+    _register_urdu_pdf_font()
 
 
 def _contains_urdu(value: str) -> bool:
@@ -165,11 +229,23 @@ def _pdf_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pdf_paragraph(text, style):
-    """اردو متن کے لیے right-aligned ReportLab Paragraph بنائیں۔"""
-    style_copy = style.clone(f"urdu_{id(style)}")
+    """اردو متن کے لیے محفوظ right-aligned ReportLab Paragraph بنائیں۔"""
+    cleaned = _clean(text)
+    style_copy = style.clone(
+        f"urdu_{id(style)}_{abs(hash(cleaned))}"
+    )
     style_copy.fontName = _register_urdu_pdf_font()
-    style_copy.alignment = 2 if _contains_urdu(_clean(text)) else style.alignment
-    return Paragraph(_pdf_text(text), style_copy)
+    style_copy.alignment = (
+        2 if _contains_urdu(cleaned) else style.alignment
+    )
+    style_copy.leading = max(
+        getattr(style_copy, "leading", 0),
+        12,
+    )
+    return Paragraph(
+        escape(_pdf_text(cleaned)),
+        style_copy,
+    )
 
 
 def to_excel_bytes(
@@ -194,6 +270,7 @@ def dataframe_to_pdf_bytes(
     title: str = "رپورٹ",
     subtitle: str = "",
 ) -> bytes:
+    _validate_urdu_pdf_support()
     buffer = io.BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -907,6 +984,7 @@ def _student_summary_progress_remarks_pdf_bytes(
 
     روزانہ تعلیمی کام کے دوسرے fields اس PDF میں شامل نہیں ہوتے۔
     """
+    _validate_urdu_pdf_support()
     buffer = io.BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -1100,6 +1178,7 @@ def _student_combined_pdf_bytes(
     work: pd.DataFrame,
 ) -> bytes:
     """تمام ماہانہ حصے ایک ہی PDF فائل میں شامل کریں۔"""
+    _validate_urdu_pdf_support()
     buffer = io.BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -1162,10 +1241,13 @@ def render_student_monthly_report(
     teacher_only: bool = False,
 ) -> None:
     """منتظم یا استاد کے لیے ایک طالب علم کی مکمل ماہانہ رپورٹ۔"""
-    if arabic_reshaper is None or get_display is None:
-        error_message(
-            "اردو PDF کے لیے arabic-reshaper اور python-bidi انسٹال کریں: "
-            "pip install arabic-reshaper python-bidi"
+    _validate_urdu_pdf_support()
+    try:
+        _validate_urdu_pdf_support()
+    except RuntimeError as error:
+        error_message(str(error))
+        st.info(
+            "درست font رکھنے کے بعد Streamlit کو مکمل بند کرکے دوبارہ چلائیں۔"
         )
     st.subheader("👤 طالب علم کی مکمل ماہانہ رپورٹ")
 
