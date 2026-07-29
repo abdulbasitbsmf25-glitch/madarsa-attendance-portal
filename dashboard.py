@@ -169,6 +169,27 @@ def _count_status(df: pd.DataFrame, status: str) -> int:
     )
 
 
+def _count_status_variants(
+    df: pd.DataFrame,
+    statuses: list[str] | tuple[str, ...] | set[str],
+) -> int:
+    """ایک ہی حیثیت کے ممکنہ مختلف املا کو محفوظ طریقے سے شمار کریں۔"""
+    if df.empty or "Status" not in df.columns:
+        return 0
+
+    valid_statuses = {
+        _clean(status)
+        for status in statuses
+        if _clean(status)
+    }
+    if not valid_statuses:
+        return 0
+
+    return int(
+        df["Status"].astype(str).str.strip().isin(valid_statuses).sum()
+    )
+
+
 def _attendance_rate(df: pd.DataFrame) -> float:
     if df.empty:
         return 0.0
@@ -284,7 +305,10 @@ def render_dashboard():
 
 
 def render_admin_dashboard():
-    _display_header(auth.current_fullname(), is_admin=True)
+    _display_header(
+        "حضرت مولانا قاری محمد اسماعیل",
+        is_admin=True,
+    )
 
     with st.spinner("اعداد و شمار لوڈ ہو رہے ہیں..."):
         students_df = sheets.get_all_students()
@@ -380,6 +404,49 @@ def _render_dashboard_body(
     morning_missing = max(total_students - morning_marked, 0)
     afternoon_missing = max(total_students - afternoon_marked, 0)
 
+    status_present = getattr(config, "STATUS_PRESENT", "حاضر")
+    status_absent = getattr(config, "STATUS_ABSENT", "غیر حاضر")
+    status_late = getattr(config, "STATUS_LATE", "تاخیر سے")
+    status_leave = getattr(
+        config,
+        "STATUS_LEAVE",
+        getattr(config, "STATUS_ON_LEAVE", "رخصت"),
+    )
+
+    morning_present = _count_status_variants(
+        morning_df,
+        [status_present, "حاضر"],
+    )
+    morning_absent = _count_status_variants(
+        morning_df,
+        [status_absent, "غیر حاضر"],
+    )
+    morning_late = _count_status_variants(
+        morning_df,
+        [status_late, "تاخیر سے", "دیر سے"],
+    )
+    morning_leave = _count_status_variants(
+        morning_df,
+        [status_leave, "رخصت", "رخصت پر", "چھٹی"],
+    )
+
+    afternoon_present = _count_status_variants(
+        afternoon_df,
+        [status_present, "حاضر"],
+    )
+    afternoon_absent = _count_status_variants(
+        afternoon_df,
+        [status_absent, "غیر حاضر"],
+    )
+    afternoon_late = _count_status_variants(
+        afternoon_df,
+        [status_late, "تاخیر سے", "دیر سے"],
+    )
+    afternoon_leave = _count_status_variants(
+        afternoon_df,
+        [status_leave, "رخصت", "رخصت پر", "چھٹی"],
+    )
+
     work_counts = _daily_work_completion_counts(
         today_work_df,
         total_students,
@@ -400,15 +467,27 @@ def _render_dashboard_body(
     with row1[4]:
         render_stat_card("آج کی تاریخ", format_date(today), "📅")
 
-    row2 = st.columns(4)
-    with row2[0]:
-        render_stat_card("صبح حاضری درج", morning_marked, "🌅")
-    with row2[1]:
-        render_stat_card("صبح حاضری باقی", morning_missing, "⚠️")
-    with row2[2]:
-        render_stat_card("دوپہر حاضری درج", afternoon_marked, "☀️")
-    with row2[3]:
-        render_stat_card("دوپہر حاضری باقی", afternoon_missing, "⚠️")
+    st.markdown("### 🌅 صبح کی حاضری")
+    morning_cols = st.columns(4)
+    with morning_cols[0]:
+        render_stat_card("صبح حاضر", morning_present, "✅")
+    with morning_cols[1]:
+        render_stat_card("صبح غیر حاضر", morning_absent, "❌")
+    with morning_cols[2]:
+        render_stat_card("صبح تاخیر سے", morning_late, "⏰")
+    with morning_cols[3]:
+        render_stat_card("صبح رخصت پر", morning_leave, "🏖️")
+
+    st.markdown("### ☀️ دوپہر کی حاضری")
+    afternoon_cols = st.columns(4)
+    with afternoon_cols[0]:
+        render_stat_card("دوپہر حاضر", afternoon_present, "✅")
+    with afternoon_cols[1]:
+        render_stat_card("دوپہر غیر حاضر", afternoon_absent, "❌")
+    with afternoon_cols[2]:
+        render_stat_card("دوپہر تاخیر سے", afternoon_late, "⏰")
+    with afternoon_cols[3]:
+        render_stat_card("دوپہر رخصت پر", afternoon_leave, "🏖️")
 
     if today_date.weekday() == config.FRIDAY_WEEKDAY:
         st.info("ℹ️ آج جمعہ ہے، اس لیے آج کو تعلیمی دن میں شمار نہیں کیا گیا۔")
