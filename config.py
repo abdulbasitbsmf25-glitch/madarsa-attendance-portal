@@ -40,6 +40,7 @@ SHEET_ATTENDANCE = "Attendance"
 SHEET_DAILY_WORK = "DailyWork"
 SHEET_LOGS = "Logs"
 SHEET_SETTINGS = "Settings"
+SHEET_SIPARA_PROGRESS = "SiparaProgress"
 
 
 # ==================================================
@@ -105,6 +106,18 @@ SETTINGS_HEADERS = [
     "Key",
     "Value",
 ]
+
+SIPARA_PROGRESS_HEADERS = [
+    "StudentName",
+    "FatherName",
+    "TeacherName",
+    "SiparaNumber",
+    "Status",
+    "StartDate",
+    "CompletionDate",
+    "Remarks",
+]
+
 
 
 # ==================================================
