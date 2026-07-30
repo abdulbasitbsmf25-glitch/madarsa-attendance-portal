@@ -27,7 +27,6 @@ import re
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from typing import Iterable
-from xml.sax.saxutils import escape
 
 import pandas as pd
 import plotly.express as px
@@ -79,115 +78,52 @@ TEACHER_URDU_FALLBACK = {
 }
 
 
-def _urdu_font_candidates() -> list[str]:
-    """
-    Urdu PDF کے لیے ممکنہ font paths ترجیحی ترتیب میں واپس کریں۔
-
-    Project کے اندر موجود Noto Nastaliq/Naskh font پہلے استعمال ہوگا،
-    پھر Windows/Linux کے معروف Urdu-capable fonts آزمائے جائیں گے۔
-    """
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    return [
-        os.environ.get("URDU_PDF_FONT_PATH", ""),
-        os.path.join(
-            base_dir,
-            "assets",
-            "fonts",
-            "NotoNaskhArabic-Regular.ttf",
-        ),
-        os.path.join(
-            base_dir,
-            "assets",
-            "fonts",
-            "NotoNastaliqUrdu-Regular.ttf",
-        ),
-        r"C:\Windows\Fonts\Nirmala.ttf",
-        r"C:\Windows\Fonts\NirmalaB.ttf",
-        r"C:\Windows\Fonts\NirmalaS.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-        r"C:\Windows\Fonts\tahoma.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoNastaliqUrdu-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
-        "/usr/share/fonts/opentype/noto/NotoNaskhArabic-Regular.ttf",
-        "/usr/share/fonts/opentype/noto/NotoNastaliqUrdu-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-
-
 def _find_urdu_font_path() -> str | None:
-    """پہلا موجود Urdu-capable font path واپس کریں۔"""
-    for candidate in _urdu_font_candidates():
-        if candidate and os.path.isfile(candidate):
-            return candidate
-
-    return None
-
-
-def _register_urdu_pdf_font() -> str:
     """
-    دستیاب fonts کو ایک ایک کرکے آزمائیں اور پہلا کامیاب font register کریں۔
-
-    اہم اصلاح:
-    پہلے code میں اگر project font موجود مگر خراب/unsupported ہوتا تو code
-    فوراً Helvetica پر چلا جاتا تھا۔ Helvetica اردو glyphs نہیں دکھاتا،
-    اسی لیے PDF میں صرف نقطے اور علامات نظر آ رہی تھیں۔
+    کمپیوٹر پر موجود ایسا TrueType فونٹ تلاش کریں جو اردو حروف دکھا سکے۔
+    Windows میں Nirmala UI عام طور پر موجود ہوتا ہے۔
     """
-    if PDF_URDU_FONT_NAME in pdfmetrics.getRegisteredFontNames():
-        return PDF_URDU_FONT_NAME
-
-    attempted_paths = []
-
-    for font_path in _urdu_font_candidates():
-        if not font_path or not os.path.isfile(font_path):
-            continue
-
-        attempted_paths.append(font_path)
-
-        try:
-            pdfmetrics.registerFont(
-                TTFont(PDF_URDU_FONT_NAME, font_path)
-            )
-            return PDF_URDU_FONT_NAME
-        except Exception:
-            # اگلا موجود font آزمائیں؛ خاموشی سے Helvetica استعمال نہ کریں۔
-            continue
-
-    expected_project_font = os.path.join(
+    project_font = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "assets",
         "fonts",
         "NotoNaskhArabic-Regular.ttf",
     )
 
-    raise RuntimeError(
-        "Urdu PDF font register نہیں ہو سکا۔ "
-        "براہ کرم یہ font file درست جگہ رکھیں: "
-        f"{expected_project_font}. "
-        "آزمائے گئے fonts: "
-        + (", ".join(attempted_paths) if attempted_paths else "کوئی نہیں")
-    )
+    candidates = [
+        os.environ.get("URDU_PDF_FONT_PATH", ""),
+        project_font,
+        r"C:\Windows\Fonts\Nirmala.ttf",
+        r"C:\Windows\Fonts\NirmalaB.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        "/usr/share/fonts/opentype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+
+    return None
 
 
-def _validate_urdu_pdf_support() -> None:
-    """PDF بنانے سے پہلے Urdu packages اور font کی موجودگی چیک کریں۔"""
-    missing_packages = []
+def _register_urdu_pdf_font() -> str:
+    """اردو PDF فونٹ register کریں اور اس کا ReportLab نام واپس کریں۔"""
+    if PDF_URDU_FONT_NAME in pdfmetrics.getRegisteredFontNames():
+        return PDF_URDU_FONT_NAME
 
-    if arabic_reshaper is None:
-        missing_packages.append("arabic-reshaper")
+    font_path = _find_urdu_font_path()
+    if not font_path:
+        return "Helvetica"
 
-    if get_display is None:
-        missing_packages.append("python-bidi")
-
-    if missing_packages:
-        raise RuntimeError(
-            "Urdu PDF کے لیے یہ packages install کریں: "
-            + ", ".join(missing_packages)
+    try:
+        pdfmetrics.registerFont(
+            TTFont(PDF_URDU_FONT_NAME, font_path)
         )
-
-    _register_urdu_pdf_font()
+        return PDF_URDU_FONT_NAME
+    except Exception:
+        return "Helvetica"
 
 
 def _contains_urdu(value: str) -> bool:
@@ -229,23 +165,11 @@ def _pdf_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pdf_paragraph(text, style):
-    """اردو متن کے لیے محفوظ right-aligned ReportLab Paragraph بنائیں۔"""
-    cleaned = _clean(text)
-    style_copy = style.clone(
-        f"urdu_{id(style)}_{abs(hash(cleaned))}"
-    )
+    """اردو متن کے لیے right-aligned ReportLab Paragraph بنائیں۔"""
+    style_copy = style.clone(f"urdu_{id(style)}")
     style_copy.fontName = _register_urdu_pdf_font()
-    style_copy.alignment = (
-        2 if _contains_urdu(cleaned) else style.alignment
-    )
-    style_copy.leading = max(
-        getattr(style_copy, "leading", 0),
-        12,
-    )
-    return Paragraph(
-        escape(_pdf_text(cleaned)),
-        style_copy,
-    )
+    style_copy.alignment = 2 if _contains_urdu(_clean(text)) else style.alignment
+    return Paragraph(_pdf_text(text), style_copy)
 
 
 def to_excel_bytes(
@@ -270,7 +194,6 @@ def dataframe_to_pdf_bytes(
     title: str = "رپورٹ",
     subtitle: str = "",
 ) -> bytes:
-    _validate_urdu_pdf_support()
     buffer = io.BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -818,8 +741,21 @@ def render_reports_page():
     st.title("📑 رپورٹس")
 
     if auth.is_teacher():
-        st.caption("اپنے طلباء کی انفرادی ماہانہ رپورٹ تیار کریں")
-        render_student_monthly_report(teacher_only=True)
+        st.caption("اپنے طلباء کی ماہانہ اور کسٹم رپورٹ تیار کریں")
+
+        teacher_tabs = st.tabs(
+            [
+                "👤 طالب علم کی ماہانہ رپورٹ",
+                "📝 کسٹم رپورٹ",
+            ]
+        )
+
+        with teacher_tabs[0]:
+            render_student_monthly_report(teacher_only=True)
+
+        with teacher_tabs[1]:
+            render_manual_custom_report()
+
         return
 
     require_admin()
@@ -838,6 +774,7 @@ def render_reports_page():
             "📖 تعلیمی کام",
             "⚠️ غیر درج شدہ اندراجات",
             "📈 چارٹس",
+            "📝 کسٹم رپورٹ",
         ]
     )
 
@@ -857,6 +794,8 @@ def render_reports_page():
         render_missing_submissions_report()
     with tabs[7]:
         render_charts_and_statistics()
+    with tabs[8]:
+        render_manual_custom_report()
 
 
 
@@ -984,7 +923,6 @@ def _student_summary_progress_remarks_pdf_bytes(
 
     روزانہ تعلیمی کام کے دوسرے fields اس PDF میں شامل نہیں ہوتے۔
     """
-    _validate_urdu_pdf_support()
     buffer = io.BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -1178,7 +1116,6 @@ def _student_combined_pdf_bytes(
     work: pd.DataFrame,
 ) -> bytes:
     """تمام ماہانہ حصے ایک ہی PDF فائل میں شامل کریں۔"""
-    _validate_urdu_pdf_support()
     buffer = io.BytesIO()
     document = SimpleDocTemplate(
         buffer,
@@ -1241,13 +1178,10 @@ def render_student_monthly_report(
     teacher_only: bool = False,
 ) -> None:
     """منتظم یا استاد کے لیے ایک طالب علم کی مکمل ماہانہ رپورٹ۔"""
-    _validate_urdu_pdf_support()
-    try:
-        _validate_urdu_pdf_support()
-    except RuntimeError as error:
-        error_message(str(error))
-        st.info(
-            "درست font رکھنے کے بعد Streamlit کو مکمل بند کرکے دوبارہ چلائیں۔"
+    if arabic_reshaper is None or get_display is None:
+        error_message(
+            "اردو PDF کے لیے arabic-reshaper اور python-bidi انسٹال کریں: "
+            "pip install arabic-reshaper python-bidi"
         )
     st.subheader("👤 طالب علم کی مکمل ماہانہ رپورٹ")
 
@@ -2333,3 +2267,99 @@ def render_charts_and_statistics():
             )
 
             st.plotly_chart(fig, use_container_width=True)
+
+def render_manual_custom_report():
+    st.subheader("📝 کسٹم ماہانہ رپورٹ")
+
+    with st.form("manual_custom_report"):
+
+        student_name = st.text_input("طالب علم کا نام")
+        father_name = st.text_input("والد کا نام")
+        teacher_name = st.text_input("استاد کا نام")
+        month = st.text_input(
+            "مہینہ (YYYY-MM)",
+            value=today_str()[:7],
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            morning_absent = st.number_input(
+                "صبح کی غیر حاضریاں",
+                min_value=0,
+                step=1,
+            )
+
+            afternoon_absent = st.number_input(
+                "دوپہر کی غیر حاضریاں",
+                min_value=0,
+                step=1,
+            )
+
+            sabaq_absent = st.number_input(
+                "سبق کی غیر حاضریاں",
+                min_value=0,
+                step=1,
+            )
+
+        with col2:
+            manzil_absent = st.number_input(
+                "منزل کی غیر حاضریاں",
+                min_value=0,
+                step=1,
+            )
+
+            sabqi_absent = st.number_input(
+                "سبقی کی غیر حاضریاں",
+                min_value=0,
+                step=1,
+            )
+
+        starting_sabaq = st.text_input(
+            "مہینے کے شروع کا سبق"
+        )
+
+        ending_sabaq = st.text_input(
+            "مہینے کے آخر کا سبق"
+        )
+
+        monthly_progress = st.text_input(
+            "پورے مہینے میں کل سبق"
+        )
+
+        submitted = st.form_submit_button("📄 رپورٹ بنائیں")
+
+    if not submitted:
+        return
+
+    report_df = pd.DataFrame([
+        {
+            "طالب علم": student_name,
+            "والد کا نام": father_name,
+            "استاد": teacher_name,
+            "مہینہ": month,
+            "صبح کی غیر حاضریاں": morning_absent,
+            "دوپہر کی غیر حاضریاں": afternoon_absent,
+            "سبق کی غیر حاضریاں": sabaq_absent,
+            "منزل کی غیر حاضریاں": manzil_absent,
+            "سبقی کی غیر حاضریاں": sabqi_absent,
+            "مہینے کے شروع کا سبق": starting_sabaq,
+            "مہینے کے آخر کا سبق": ending_sabaq,
+            "پورے مہینے میں کل سبق": monthly_progress,
+        }
+    ])
+
+    st.success("رپورٹ تیار ہو گئی۔")
+
+    st.dataframe(
+        report_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    _render_export_buttons(
+        report_df,
+        f"manual_report_{student_name}_{month}",
+        "ماہانہ طالب علم کی رپورٹ",
+        month,
+    )
