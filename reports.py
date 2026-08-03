@@ -68,6 +68,7 @@ from utils import (
 
 PDF_URDU_FONT_NAME = "UrduReportFont"
 
+
 PDF_HEADER_IMAGE_CANDIDATES = [
     os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -92,6 +93,7 @@ def _find_pdf_header_image_path() -> str | None:
     for candidate in PDF_HEADER_IMAGE_CANDIDATES:
         if os.path.exists(candidate):
             return candidate
+
     return None
 
 
@@ -134,12 +136,10 @@ def _draw_pdf_header(canvas, document) -> None:
         canvas.restoreState()
 
     except Exception:
-        # عنوانی تصویر میں خرابی ہو تو باقی PDF پھر بھی تیار ہو۔
+        # تصویر میں مسئلہ ہو تو PDF پھر بھی تیار ہو۔
         return
 
 
-# Known teacher usernames mapped to their Urdu display names.
-# This fallback is used even if the Users sheet contains an English name.
 
 # Known teacher usernames mapped to their Urdu display names.
 # This fallback is used even if the Users sheet contains an English name.
@@ -813,6 +813,7 @@ def render_daily_work_table_and_export(
     )
 
 
+
 def render_manual_sipara_report() -> None:
     """استاد یا منتظم کے لیے دستی سپارہ رپورٹ تیار کریں۔"""
     st.subheader("📝 دستی سپارہ رپورٹ")
@@ -1013,14 +1014,12 @@ def render_reports_page():
 
     if auth.is_teacher():
         st.caption(
-            "اپنے طلباء کی ماہانہ، خودکار سپارہ، دستی سپارہ "
-            "اور کسٹم رپورٹ تیار کریں"
+            "اپنے طلباء کی ماہانہ، دستی سپارہ اور کسٹم رپورٹ تیار کریں"
         )
 
         teacher_tabs = st.tabs(
             [
                 "👤 طالب علم کی ماہانہ رپورٹ",
-                "📗 خودکار سپارہ رپورٹ",
                 "📝 دستی سپارہ رپورٹ",
                 "📋 کسٹم رپورٹ",
             ]
@@ -1032,14 +1031,9 @@ def render_reports_page():
             )
 
         with teacher_tabs[1]:
-            render_sipara_report(
-                teacher_only=True
-            )
-
-        with teacher_tabs[2]:
             render_manual_sipara_report()
 
-        with teacher_tabs[3]:
+        with teacher_tabs[2]:
             render_manual_custom_report()
 
         return
@@ -1047,8 +1041,8 @@ def render_reports_page():
     require_admin()
 
     st.caption(
-        "حاضری، روزانہ تعلیمی کام، خودکار سپارہ، دستی سپارہ، "
-        "ماہانہ پیش رفت اور دیگر رپورٹس"
+        "حاضری، روزانہ تعلیمی کام، دستی سپارہ، ماہانہ پیش رفت "
+        "اور دیگر رپورٹس"
     )
 
     tabs = st.tabs(
@@ -1059,7 +1053,6 @@ def render_reports_page():
             "🗓️ ماہانہ رپورٹ",
             "📊 مخصوص تاریخی رینج",
             "📖 تعلیمی کام",
-            "📗 خودکار سپارہ رپورٹ",
             "📝 دستی سپارہ رپورٹ",
             "⚠️ غیر درج شدہ اندراجات",
             "📈 چارٹس",
@@ -1088,20 +1081,15 @@ def render_reports_page():
         render_daily_work_report()
 
     with tabs[6]:
-        render_sipara_report(
-            teacher_only=False
-        )
-
-    with tabs[7]:
         render_manual_sipara_report()
 
-    with tabs[8]:
+    with tabs[7]:
         render_missing_submissions_report()
 
-    with tabs[9]:
+    with tabs[8]:
         render_charts_and_statistics()
 
-    with tabs[10]:
+    with tabs[9]:
         render_manual_custom_report()
 
 
