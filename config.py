@@ -108,17 +108,72 @@ SETTINGS_HEADERS = [
 ]
 
 SIPARA_PROGRESS_HEADERS = [
+    "RecordID",
     "StudentName",
     "FatherName",
+    "TeacherUsername",
     "TeacherName",
     "SiparaNumber",
-    "Status",
+    "SiparaName",
     "StartDate",
     "CompletionDate",
+    "DurationDays",
+    "TotalSabaqTaken",
+    "Status",
     "Remarks",
+    "LastUpdated",
 ]
 
+# ==================================================
+# سپارہ ماڈیول
+# ==================================================
+SIPARA_STATUS_IN_PROGRESS = "زیرِ تکمیل"
+SIPARA_STATUS_COMPLETED = "مکمل"
 
+SIPARA_STATUSES = [
+    SIPARA_STATUS_IN_PROGRESS,
+    SIPARA_STATUS_COMPLETED,
+]
+
+SIPARA_NAMES = {
+    1: "الم",
+    2: "سیقول",
+    3: "تلک الرسل",
+    4: "لن تنالوا",
+    5: "والمحصنات",
+    6: "لا یحب اللہ",
+    7: "واذا سمعوا",
+    8: "ولو اننا",
+    9: "قال الملا",
+    10: "واعلموا",
+    11: "یعتذرون",
+    12: "وما من دابة",
+    13: "وما ابرئ",
+    14: "ربما",
+    15: "سبحان الذی",
+    16: "قال الم",
+    17: "اقترب",
+    18: "قد افلح",
+    19: "وقال الذین",
+    20: "امن خلق",
+    21: "اتل ما اوحی",
+    22: "ومن یقنت",
+    23: "وما لی",
+    24: "فمن اظلم",
+    25: "الیہ یرد",
+    26: "حم",
+    27: "قال فما خطبکم",
+    28: "قد سمع اللہ",
+    29: "تبارک الذی",
+    30: "عمّ",
+}
+
+SIPARA_NUMBERS = list(SIPARA_NAMES.keys())
+
+SIPARA_DISPLAY_NAMES = {
+    number: f"{name} (سپارہ {number})"
+    for number, name in SIPARA_NAMES.items()
+}
 
 # ==================================================
 # تاریخ اور وقت
