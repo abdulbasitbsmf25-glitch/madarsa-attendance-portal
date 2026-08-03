@@ -37,6 +37,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     Paragraph,
     SimpleDocTemplate,
@@ -66,6 +67,79 @@ from utils import (
 
 
 PDF_URDU_FONT_NAME = "UrduReportFont"
+
+PDF_HEADER_IMAGE_CANDIDATES = [
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "assets",
+        "report_header.jpeg",
+    ),
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "assets",
+        "report_header.jpg",
+    ),
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "assets",
+        "report_header.png",
+    ),
+]
+
+
+def _find_pdf_header_image_path() -> str | None:
+    """PDF کے تصویری مدرسہ عنوان کا موجودہ راستہ واپس کریں۔"""
+    for candidate in PDF_HEADER_IMAGE_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _draw_pdf_header(canvas, document) -> None:
+    """ہر PDF صفحے کے اوپر مدرسہ کا تصویری عنوان لگائیں۔"""
+    image_path = _find_pdf_header_image_path()
+
+    if not image_path:
+        return
+
+    try:
+        image = ImageReader(image_path)
+        original_width, original_height = image.getSize()
+
+        page_width, page_height = document.pagesize
+        maximum_width = page_width - (24 * mm)
+        maximum_height = 48 * mm
+
+        scale = min(
+            maximum_width / original_width,
+            maximum_height / original_height,
+        )
+
+        display_width = original_width * scale
+        display_height = original_height * scale
+
+        x_position = (page_width - display_width) / 2
+        y_position = page_height - display_height - (5 * mm)
+
+        canvas.saveState()
+        canvas.drawImage(
+            image,
+            x_position,
+            y_position,
+            width=display_width,
+            height=display_height,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+        canvas.restoreState()
+
+    except Exception:
+        # عنوانی تصویر میں خرابی ہو تو باقی PDF پھر بھی تیار ہو۔
+        return
+
+
+# Known teacher usernames mapped to their Urdu display names.
+# This fallback is used even if the Users sheet contains an English name.
 
 # Known teacher usernames mapped to their Urdu display names.
 # This fallback is used even if the Users sheet contains an English name.
@@ -198,7 +272,7 @@ def dataframe_to_pdf_bytes(
     document = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
-        topMargin=15 * mm,
+        topMargin=60 * mm,
         bottomMargin=15 * mm,
         leftMargin=12 * mm,
         rightMargin=12 * mm,
@@ -269,7 +343,11 @@ def dataframe_to_pdf_bytes(
         )
         elements.append(table)
 
-    document.build(elements)
+    document.build(
+        elements,
+        onFirstPage=_draw_pdf_header,
+        onLaterPages=_draw_pdf_header,
+    )
     return buffer.getvalue()
 
 
@@ -735,33 +813,242 @@ def render_daily_work_table_and_export(
     )
 
 
+def render_manual_sipara_report() -> None:
+    """استاد یا منتظم کے لیے دستی سپارہ رپورٹ تیار کریں۔"""
+    st.subheader("📝 دستی سپارہ رپورٹ")
+
+    st.caption(
+        "سپارہ کی معلومات درج کرکے PDF، Excel یا پرنٹ رپورٹ تیار کریں۔"
+    )
+
+    default_teacher_name = (
+        auth.current_fullname()
+        if auth.is_teacher()
+        else ""
+    )
+
+    with st.form("manual_sipara_report_form"):
+        first_row = st.columns(2)
+
+        with first_row[0]:
+            sipara_number = st.selectbox(
+                "سپارہ نمبر",
+                list(range(1, 31)),
+                format_func=lambda number: (
+                    config.SIPARA_DISPLAY_NAMES.get(
+                        number,
+                        f"سپارہ {number}",
+                    )
+                ),
+                key="manual_sipara_number",
+            )
+
+        with first_row[1]:
+            teacher_name = st.text_input(
+                "استاد کا نام",
+                value=default_teacher_name,
+                key="manual_sipara_teacher_name",
+            )
+
+        second_row = st.columns(2)
+
+        with second_row[0]:
+            student_name = st.text_input(
+                "طالب علم کا نام",
+                key="manual_sipara_student_name",
+            )
+
+        with second_row[1]:
+            father_name = st.text_input(
+                "والد کا نام",
+                key="manual_sipara_father_name",
+            )
+
+        date_row = st.columns(2)
+
+        with date_row[0]:
+            start_date = st.date_input(
+                "شروع کی تاریخ",
+                value=pd.to_datetime(today_str()).date(),
+                key="manual_sipara_start_date",
+            )
+
+        with date_row[1]:
+            end_date = st.date_input(
+                "تکمیل کی تاریخ",
+                value=pd.to_datetime(today_str()).date(),
+                key="manual_sipara_end_date",
+            )
+
+        number_row = st.columns(2)
+
+        with number_row[0]:
+            total_lessons = st.number_input(
+                "کل اسباق",
+                min_value=0,
+                step=1,
+                value=0,
+                key="manual_sipara_total_lessons",
+            )
+
+        with number_row[1]:
+            duration_days = st.number_input(
+                "تکمیل میں لگنے والے دن",
+                min_value=0,
+                step=1,
+                value=0,
+                key="manual_sipara_duration_days",
+            )
+
+        remarks = st.text_area(
+            "کیفیت / تبصرہ",
+            placeholder=(
+                "طالب علم کی کارکردگی، تجوید، غلطیاں "
+                "یا دوسری اہم معلومات درج کریں۔"
+            ),
+            height=130,
+            key="manual_sipara_remarks",
+        )
+
+        submitted = st.form_submit_button(
+            "📄 رپورٹ تیار کریں",
+            use_container_width=True,
+        )
+
+    if not submitted:
+        return
+
+    if not _clean(student_name):
+        error_message("طالب علم کا نام درج کریں۔")
+        return
+
+    if not _clean(father_name):
+        error_message("والد کا نام درج کریں۔")
+        return
+
+    if not _clean(teacher_name):
+        error_message("استاد کا نام درج کریں۔")
+        return
+
+    if start_date > end_date:
+        error_message(
+            "شروع کی تاریخ تکمیل کی تاریخ سے پہلے ہونی چاہیے۔"
+        )
+        return
+
+    sipara_name = config.SIPARA_NAMES.get(
+        int(sipara_number),
+        "",
+    )
+
+    report_df = pd.DataFrame(
+        [
+            {
+                "سپارہ نمبر": int(sipara_number),
+                "سپارہ نام": sipara_name,
+                "طالب علم": _clean(student_name),
+                "والد کا نام": _clean(father_name),
+                "استاد": _clean(teacher_name),
+                "شروع کی تاریخ": str(start_date),
+                "تکمیل کی تاریخ": str(end_date),
+                "کل اسباق": int(total_lessons),
+                "تکمیل میں لگنے والے دن": int(duration_days),
+                "کیفیت / تبصرہ": _clean(remarks),
+            }
+        ]
+    )
+
+    st.success("دستی سپارہ رپورٹ تیار ہو گئی۔")
+
+    st.dataframe(
+        report_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    safe_student_name = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "_",
+        _clean(student_name),
+    ).strip("_") or "student"
+
+    filename_prefix = (
+        f"manual_sipara_report_"
+        f"{safe_student_name}_"
+        f"sipara_{sipara_number}"
+    )
+
+    _render_export_buttons(
+        report_df,
+        filename_prefix,
+        "دستی سپارہ تکمیل رپورٹ",
+        (
+            f"{_clean(student_name)} | "
+            f"سپارہ {sipara_number}"
+        ),
+    )
+
+    st.markdown("---")
+    st.markdown("### 🖨️ رپورٹ پرنٹ کریں")
+
+    if st.button(
+        "🖨️ پرنٹ کریں",
+        use_container_width=True,
+        key="manual_sipara_report_print",
+    ):
+        st.components.v1.html(
+            """
+            <script>
+                window.parent.print();
+            </script>
+            """,
+            height=0,
+        )
+
+
 def render_reports_page():
     auth.require_login()
 
     st.title("📑 رپورٹس")
 
     if auth.is_teacher():
-        st.caption("اپنے طلباء کی ماہانہ اور کسٹم رپورٹ تیار کریں")
+        st.caption(
+            "اپنے طلباء کی ماہانہ، خودکار سپارہ، دستی سپارہ "
+            "اور کسٹم رپورٹ تیار کریں"
+        )
 
         teacher_tabs = st.tabs(
             [
                 "👤 طالب علم کی ماہانہ رپورٹ",
-                "📝 کسٹم رپورٹ",
+                "📗 خودکار سپارہ رپورٹ",
+                "📝 دستی سپارہ رپورٹ",
+                "📋 کسٹم رپورٹ",
             ]
         )
 
         with teacher_tabs[0]:
-            render_student_monthly_report(teacher_only=True)
+            render_student_monthly_report(
+                teacher_only=True
+            )
 
         with teacher_tabs[1]:
+            render_sipara_report(
+                teacher_only=True
+            )
+
+        with teacher_tabs[2]:
+            render_manual_sipara_report()
+
+        with teacher_tabs[3]:
             render_manual_custom_report()
 
         return
 
     require_admin()
+
     st.caption(
-        "حاضری، روزانہ تعلیمی کام، ماہانہ پیش رفت اور "
-        "غیر درج شدہ اندراجات کی رپورٹس"
+        "حاضری، روزانہ تعلیمی کام، خودکار سپارہ، دستی سپارہ، "
+        "ماہانہ پیش رفت اور دیگر رپورٹس"
     )
 
     tabs = st.tabs(
@@ -772,31 +1059,50 @@ def render_reports_page():
             "🗓️ ماہانہ رپورٹ",
             "📊 مخصوص تاریخی رینج",
             "📖 تعلیمی کام",
+            "📗 خودکار سپارہ رپورٹ",
+            "📝 دستی سپارہ رپورٹ",
             "⚠️ غیر درج شدہ اندراجات",
             "📈 چارٹس",
-            "📝 کسٹم رپورٹ",
+            "📋 کسٹم رپورٹ",
         ]
     )
 
     with tabs[0]:
-        render_student_monthly_report(teacher_only=False)
+        render_student_monthly_report(
+            teacher_only=False
+        )
+
     with tabs[1]:
         render_daily_report()
+
     with tabs[2]:
         render_weekly_report()
+
     with tabs[3]:
         render_monthly_report()
+
     with tabs[4]:
         render_custom_range_report()
+
     with tabs[5]:
         render_daily_work_report()
-    with tabs[6]:
-        render_missing_submissions_report()
-    with tabs[7]:
-        render_charts_and_statistics()
-    with tabs[8]:
-        render_manual_custom_report()
 
+    with tabs[6]:
+        render_sipara_report(
+            teacher_only=False
+        )
+
+    with tabs[7]:
+        render_manual_sipara_report()
+
+    with tabs[8]:
+        render_missing_submissions_report()
+
+    with tabs[9]:
+        render_charts_and_statistics()
+
+    with tabs[10]:
+        render_manual_custom_report()
 
 
 def _students_for_current_teacher(students: pd.DataFrame) -> pd.DataFrame:
@@ -927,7 +1233,7 @@ def _student_summary_progress_remarks_pdf_bytes(
     document = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
-        topMargin=12 * mm,
+        topMargin=60 * mm,
         bottomMargin=12 * mm,
         leftMargin=10 * mm,
         rightMargin=10 * mm,
@@ -963,7 +1269,11 @@ def _student_summary_progress_remarks_pdf_bytes(
         _pdf_table(remarks, page_width),
     ]
 
-    document.build(elements)
+    document.build(
+        elements,
+        onFirstPage=_draw_pdf_header,
+        onLaterPages=_draw_pdf_header,
+    )
     return buffer.getvalue()
 
 
@@ -1073,7 +1383,7 @@ def _student_summary_progress_pdf_bytes(
     document = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
-        topMargin=12 * mm,
+        topMargin=60 * mm,
         bottomMargin=12 * mm,
         leftMargin=10 * mm,
         rightMargin=10 * mm,
@@ -1100,7 +1410,11 @@ def _student_summary_progress_pdf_bytes(
         _pdf_table(progress, page_width),
     ]
 
-    document.build(elements)
+    document.build(
+        elements,
+        onFirstPage=_draw_pdf_header,
+        onLaterPages=_draw_pdf_header,
+    )
     return buffer.getvalue()
 
 
@@ -1120,7 +1434,7 @@ def _student_combined_pdf_bytes(
     document = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
-        topMargin=12 * mm,
+        topMargin=60 * mm,
         bottomMargin=12 * mm,
         leftMargin=10 * mm,
         rightMargin=10 * mm,
@@ -1169,7 +1483,11 @@ def _student_combined_pdf_bytes(
         elements.append(_pdf_table(section_df, page_width))
         elements.append(Spacer(1, 12))
 
-    document.build(elements)
+    document.build(
+        elements,
+        onFirstPage=_draw_pdf_header,
+        onLaterPages=_draw_pdf_header,
+    )
     return buffer.getvalue()
 
 
